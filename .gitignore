@@ -1,0 +1,9 @@
+.DS_Store
+.venv/
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.claude/
