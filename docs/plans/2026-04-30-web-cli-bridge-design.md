@@ -1,5 +1,7 @@
 # Web CLI Bridge — Design
 
+> **Superseded by [`2026-05-16-web-cli-bridge-v2-design.md`](2026-05-16-web-cli-bridge-v2-design.md)**, which adds timeouts, stdin, streaming (`/stream`), an optional bearer token, and the menu bar app's configuration model. This v1 doc still accurately describes the original `/run` shape and architecture; everything in v2 is additive.
+
 A tiny localhost HTTP server that executes shell commands on behalf of local
 HTML apps and returns the result as JSON.
 
@@ -57,7 +59,7 @@ CORS preflight. Returns 204 with:
 
 ### Error responses
 
-- `400` — JSON parse failure, missing `command`, or `cwd` does not exist.
+- `400` — JSON parse failure, missing `command`, or `cwd` does not exist. (Implementation also catches `ValueError` here to handle a missing/non-numeric `Content-Length` header.)
 - `405` — `POST` to a path other than `/run`.
 - `501` — methods without a handler (`GET`, `PUT`, `DELETE`, …). This is
   Python's stdlib default; we don't add `do_GET` etc. since rejecting them
