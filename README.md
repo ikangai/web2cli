@@ -4,6 +4,8 @@ A tiny localhost HTTP server that executes shell commands on behalf of local
 HTML apps and returns the result as JSON or streams it as Server-Sent Events.
 Ships with an optional macOS menu bar app wrapper.
 
+Current release: **v0.2.0** — see [`CHANGELOG.md`](CHANGELOG.md) for what changed.
+
 ## Components
 
 - `server.py` — the bridge. Pure Python stdlib, no dependencies.
@@ -185,7 +187,7 @@ The server listens only on `127.0.0.1` and trusts every caller on the loopback i
 
 Acceptable for single-user development machines. **Not** acceptable for shared hosts or environments where untrusted JavaScript may issue `fetch` calls from any browser tab — enable the token there.
 
-See [`docs/plans/2026-05-16-web-cli-bridge-v2-design.md`](docs/plans/2026-05-16-web-cli-bridge-v2-design.md) for the full design.
+See [`docs/plans/2026-05-16-web-cli-bridge-v2-design.md`](docs/plans/2026-05-16-web-cli-bridge-v2-design.md) for the full design and [`CHANGELOG.md`](CHANGELOG.md) for release history.
 
 ## Known limitations
 
