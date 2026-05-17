@@ -12,6 +12,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 __version__ = "0.3.0"
 
 
+MAX_BODY_BYTES = 16 * 1024 * 1024  # 16 MiB — enough for reasonable stdin payloads
+
+
+class _BodyTooLarge(Exception):
+    pass
+
+
 def _token():
     return os.environ.get("WEB_CLI_BRIDGE_TOKEN") or None
 
@@ -55,6 +62,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _parse_body(self):
         length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY_BYTES:
+            raise _BodyTooLarge(
+                f"request body exceeds {MAX_BODY_BYTES} bytes"
+            )
         body = json.loads(self.rfile.read(length)) if length else {}
         command = body["command"]
         if not isinstance(command, str):
@@ -84,6 +95,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._handle_run(command, cwd, timeout, stdin_data)
             else:
                 self._handle_stream(command, cwd, timeout, stdin_data)
+        except _BodyTooLarge as e:
+            self._send(413, {"error": str(e)})
         except (KeyError, ValueError, TypeError, json.JSONDecodeError,
                 FileNotFoundError, NotADirectoryError) as e:
             self._send(400, {"error": str(e)})
