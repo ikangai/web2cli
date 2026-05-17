@@ -6,6 +6,14 @@ Ships with an optional macOS menu bar app wrapper.
 
 Current release: **v0.2.0** — see [`CHANGELOG.md`](CHANGELOG.md) for what changed.
 
+## Install (macOS menu bar app)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ikangai/web2cli/main/install.sh | sh
+```
+
+Downloads the latest pre-built `WebCLIBridge.app` from [GitHub Releases](https://github.com/ikangai/web2cli/releases), drops it into `/Applications` (asks for your password), and launches it. Re-running upgrades in place. macOS only; for the bare server on other platforms see [Run](#run) below.
+
 ## Components
 
 - `server.py` — the bridge. Pure Python stdlib, no dependencies.
