@@ -217,7 +217,22 @@ class Handler(BaseHTTPRequestHandler):
                     pass
                 return
 
-            exit_code = None if timed_out else proc.wait()
+            # Bound the terminal wait — a process that closes stdout/stderr
+            # but keeps running (e.g. `exec >/dev/null; sleep 600`) would
+            # otherwise hang the handler indefinitely.
+            if timed_out:
+                exit_code = None
+            else:
+                try:
+                    exit_code = proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    exit_code = None
+                    timed_out = True
             self._sse_exit(exit_code, timed_out)
         except Exception as e:
             try:
