@@ -82,11 +82,19 @@ def _with_root(fn):
 
 
 def _clip_copy(text):
+    # PowerShell's Set-Clipboard handles Unicode end-to-end. clip.exe needs a
+    # UTF-16LE BOM or input in the active OEM codepage; passing raw UTF-16LE
+    # without a BOM (the previous impl) produced NUL-interleaved garbage on
+    # paste even for ASCII tokens.
     try:
         result = subprocess.run(
-            ["clip"],
-            input=text.encode("utf-16le"),
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "$input | Set-Clipboard"],
+            input=text,
+            text=True,
+            encoding="utf-8",
             check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         return result.returncode == 0
     except (FileNotFoundError, OSError):
