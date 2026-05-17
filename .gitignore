@@ -2,6 +2,7 @@
 .venv/
 build/
 dist/
+*.app.zip
 __pycache__/
 *.pyc
 *.pyo
