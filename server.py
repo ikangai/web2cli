@@ -2,9 +2,10 @@
 import hmac
 import json
 import os
-import select
+import queue
 import subprocess
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -140,15 +141,33 @@ class Handler(BaseHTTPRequestHandler):
                 except (BrokenPipeError, OSError):
                     pass
 
+            # Pump stdout/stderr via reader threads + queue so the impl is
+            # cross-platform — select.select() doesn't work on pipe FDs on
+            # Windows, which previously broke /stream in the Windows tray build.
+            chunks: "queue.Queue[tuple[str, bytes | None]]" = queue.Queue()
+
+            def _reader(label, fileobj):
+                try:
+                    while True:
+                        chunk = fileobj.read(4096)
+                        if not chunk:
+                            break
+                        chunks.put((label, chunk))
+                except (OSError, ValueError):
+                    pass
+                finally:
+                    chunks.put((label, None))
+
+            for label, fileobj in (("stdout", proc.stdout), ("stderr", proc.stderr)):
+                threading.Thread(
+                    target=_reader, args=(label, fileobj), daemon=True
+                ).start()
+
             start = time.monotonic()
             timed_out = False
-            labels = {
-                proc.stdout.fileno(): "stdout",
-                proc.stderr.fileno(): "stderr",
-            }
-            open_fds = set(labels)
+            open_streams = 2
 
-            while open_fds:
+            while open_streams > 0:
                 if timeout is not None:
                     remaining = timeout - (time.monotonic() - start)
                     if remaining <= 0:
@@ -158,27 +177,32 @@ class Handler(BaseHTTPRequestHandler):
                     wait = min(remaining, 0.5)
                 else:
                     wait = 0.5
-
-                ready, _, _ = select.select(list(open_fds), [], [], wait)
-                for fd in ready:
-                    chunk = os.read(fd, 4096)
-                    if not chunk:
-                        open_fds.discard(fd)
-                    else:
-                        self._sse(labels[fd], chunk.decode("utf-8", errors="replace"))
+                try:
+                    label, payload = chunks.get(timeout=wait)
+                except queue.Empty:
+                    continue
+                if payload is None:
+                    open_streams -= 1
+                else:
+                    self._sse(label, payload.decode("utf-8", errors="replace"))
 
             if timed_out:
+                # Drain any chunks the reader threads queued before/after the
+                # kill, with a short budget so we don't hang the request.
+                drain_deadline = time.monotonic() + 1.0
+                while open_streams > 0 and time.monotonic() < drain_deadline:
+                    try:
+                        label, payload = chunks.get(timeout=0.05)
+                    except queue.Empty:
+                        continue
+                    if payload is None:
+                        open_streams -= 1
+                    else:
+                        self._sse(label, payload.decode("utf-8", errors="replace"))
                 try:
                     proc.wait(timeout=1)
                 except subprocess.TimeoutExpired:
                     pass
-                for fd in list(open_fds):
-                    try:
-                        chunk = os.read(fd, 65536)
-                        if chunk:
-                            self._sse(labels[fd], chunk.decode("utf-8", errors="replace"))
-                    except OSError:
-                        pass
 
             exit_code = None if timed_out else proc.wait()
             self._sse_exit(exit_code, timed_out)
