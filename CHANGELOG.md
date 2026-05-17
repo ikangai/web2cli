@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-05-17
+
+Adds Windows support and a one-line installer on both platforms. No changes to the wire protocol — every v0.2.0 client keeps working.
+
+### Added
+- **`bridge_app_win.py`** — Windows tray app. Same menu and behavior as the macOS app: Start/Stop, Change Port, Token Generate/Copy/Clear, About, Quit. Uses [`pystray`](https://pypi.org/project/pystray/) for the tray icon and `tkinter` (stdlib) for dialogs. Config at `%LOCALAPPDATA%\WebCLIBridge\config.json`.
+- **`pyinstaller-win.spec`** — PyInstaller config that builds `dist\WebCLIBridge.exe` (single-file, no console window).
+- **`.github/workflows/release-windows.yml`** — GitHub Actions workflow that builds the Windows `.exe` on every `v*` tag push and attaches `WebCLIBridge-windows-x64.zip` to the release. Manual `workflow_dispatch` trigger available for testing.
+- **`install.ps1`** — PowerShell installer. One-liner: `irm https://raw.githubusercontent.com/ikangai/web2cli/main/install.ps1 | iex`. Resolves the latest release, downloads the asset, installs to `%LOCALAPPDATA%\Programs\WebCLIBridge\`, strips the Mark of the Web with `Unblock-File`, creates a Start Menu shortcut, and launches the app.
+- README install section now covers both platforms.
+- Design doc at `docs/plans/2026-05-17-windows-binary-design.md`.
+
+### Changed
+- `setup.py`: `CFBundleVersion` / `CFBundleShortVersionString` bumped to `0.3.0`.
+- `bridge_app.py` / `bridge_app_win.py`: `VERSION = "0.3.0"`.
+
 ## [0.2.0] — 2026-05-16
 
 Closes every "deferred" item from the v1 design and lands the menu bar app's configuration model. Fully backward compatible — v1 clients that only send `{ "command": "..." }` to `/run` keep working unchanged.
@@ -46,5 +62,6 @@ Initial release.
 - macOS menu bar app (`bridge_app.py`) with Start / Stop / Quit.
 - `py2app` configuration to bundle a standalone `.app`.
 
+[0.3.0]: https://github.com/ikangai/web2cli/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ikangai/web2cli/releases/tag/v0.2.0
 [0.1.0]: https://github.com/ikangai/web2cli/commit/00dd574

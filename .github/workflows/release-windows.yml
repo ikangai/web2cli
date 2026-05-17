@@ -1,0 +1,53 @@
+name: Build Windows release asset
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pystray==0.19.5 Pillow pyinstaller
+
+      - name: Build .exe
+        run: pyinstaller --noconfirm pyinstaller-win.spec
+
+      - name: Zip the bundle
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist\WebCLIBridge.exe -DestinationPath dist\WebCLIBridge-windows-x64.zip -Force
+
+      - name: Upload as workflow artifact (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: WebCLIBridge-windows-x64
+          path: dist/WebCLIBridge-windows-x64.zip
+
+      - name: Attach to GitHub release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title $tag --notes "Auto-generated release. Edit description after upload completes."
+          }
+          gh release upload $tag dist/WebCLIBridge-windows-x64.zip --clobber

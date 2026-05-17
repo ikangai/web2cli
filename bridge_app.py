@@ -11,7 +11,7 @@ import rumps
 
 from server import Handler
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 

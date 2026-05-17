@@ -2,23 +2,37 @@
 
 A tiny localhost HTTP server that executes shell commands on behalf of local
 HTML apps and returns the result as JSON or streams it as Server-Sent Events.
-Ships with an optional macOS menu bar app wrapper.
+Ships with optional macOS menu bar and Windows tray app wrappers.
 
-Current release: **v0.2.0** — see [`CHANGELOG.md`](CHANGELOG.md) for what changed.
+Current release: **v0.3.0** — see [`CHANGELOG.md`](CHANGELOG.md) for what changed.
 
-## Install (macOS menu bar app)
+## Install
+
+**macOS** (menu bar app):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ikangai/web2cli/main/install.sh | sh
 ```
 
-Downloads the latest pre-built `WebCLIBridge.app` from [GitHub Releases](https://github.com/ikangai/web2cli/releases), drops it into `/Applications` (asks for your password), and launches it. Re-running upgrades in place. macOS only; for the bare server on other platforms see [Run](#run) below.
+Drops `WebCLIBridge.app` into `/Applications` (asks for your password) and launches it.
+
+**Windows** (system tray app):
+
+```powershell
+irm https://raw.githubusercontent.com/ikangai/web2cli/main/install.ps1 | iex
+```
+
+Installs `WebCLIBridge.exe` into `%LOCALAPPDATA%\Programs\WebCLIBridge\` (no admin needed), adds a Start Menu shortcut, and launches it. SmartScreen may show "Windows protected your PC" on first launch — click *More info → Run anyway*.
+
+Both pull the latest pre-built bundle from [GitHub Releases](https://github.com/ikangai/web2cli/releases). Re-running either one-liner upgrades in place. For the bare server on other platforms see [Run](#run) below.
 
 ## Components
 
 - `server.py` — the bridge. Pure Python stdlib, no dependencies.
-- `bridge_app.py` — macOS menu bar app (uses [`rumps`](https://pypi.org/project/rumps/)) that starts/stops the server and manages port/token config.
-- `setup.py` — `py2app` config to build a standalone `.app` bundle.
+- `bridge_app.py` — macOS menu bar app (uses [`rumps`](https://pypi.org/project/rumps/)).
+- `bridge_app_win.py` — Windows tray app (uses [`pystray`](https://pypi.org/project/pystray/) + [`Pillow`](https://pypi.org/project/Pillow/) + `tkinter`).
+- `setup.py` — `py2app` config to build a standalone macOS `.app` bundle.
+- `pyinstaller-win.spec` — PyInstaller config to build a standalone Windows `.exe` (run on GitHub Actions).
 
 ## Run
 
@@ -187,6 +201,16 @@ The config file is created with mode `0600`.
 python3 -m pip install py2app rumps
 python3 setup.py py2app
 # → dist/WebCLIBridge.app
+```
+
+## Build a Windows `.exe`
+
+Normally built by [`.github/workflows/release-windows.yml`](.github/workflows/release-windows.yml) on tag push. To build locally on Windows:
+
+```powershell
+python -m pip install pystray Pillow pyinstaller
+pyinstaller --noconfirm pyinstaller-win.spec
+# → dist\WebCLIBridge.exe
 ```
 
 ## Security model
