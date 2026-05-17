@@ -45,7 +45,13 @@ class Handler(BaseHTTPRequestHandler):
         prefix = "Bearer "
         if not header.startswith(prefix):
             return False
-        return hmac.compare_digest(header[len(prefix):], token)
+        # compare_digest raises TypeError on non-ASCII str inputs. Treat any
+        # malformed bearer payload as a plain auth failure (401) instead of
+        # letting the TypeError bubble to do_POST and surface as a 400.
+        try:
+            return hmac.compare_digest(header[len(prefix):], token)
+        except (TypeError, ValueError):
+            return False
 
     def _parse_body(self):
         length = int(self.headers.get("Content-Length") or 0)
