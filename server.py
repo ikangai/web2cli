@@ -132,14 +132,26 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
             if stdin_data is not None and proc.stdin is not None:
-                try:
-                    proc.stdin.write(stdin_data.encode("utf-8"))
-                except (BrokenPipeError, OSError):
-                    pass
-                try:
-                    proc.stdin.close()
-                except (BrokenPipeError, OSError):
-                    pass
+                # Write stdin on a dedicated thread. A synchronous write here
+                # would deadlock if stdin exceeds the pipe buffer (~64 KiB)
+                # and the child produces stdout/stderr before draining stdin
+                # — parent blocked on write, child blocked on write, neither
+                # progressing.
+                stdin_bytes = stdin_data.encode("utf-8")
+                stdin_pipe = proc.stdin
+
+                def _write_stdin():
+                    try:
+                        stdin_pipe.write(stdin_bytes)
+                    except (BrokenPipeError, OSError):
+                        pass
+                    finally:
+                        try:
+                            stdin_pipe.close()
+                        except (BrokenPipeError, OSError):
+                            pass
+
+                threading.Thread(target=_write_stdin, daemon=True).start()
 
             # Pump stdout/stderr via reader threads + queue so the impl is
             # cross-platform — select.select() doesn't work on pipe FDs on
