@@ -35,6 +35,20 @@ def load_config():
 def save_config(cfg):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+    # Mirror the macOS chmod 0o600 — restrict to the current user only so the
+    # bearer token isn't readable by other local accounts that gain access to
+    # %LOCALAPPDATA% (e.g. via roaming-profile / weakened inherited ACLs).
+    user = os.environ.get("USERNAME")
+    if user:
+        try:
+            subprocess.run(
+                ["icacls", str(CONFIG_PATH),
+                 "/inheritance:r", "/grant:r", f"{user}:F"],
+                check=False, capture_output=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (FileNotFoundError, OSError):
+            pass
 
 
 def resolve_port(cfg):
