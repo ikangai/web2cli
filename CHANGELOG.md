@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-05-17
+
+Bug-fix release. No changes to the wire protocol — every v0.3.0 client keeps working.
+
+### Fixed
+- **`/stream` on Windows.** The handler used `select.select()` on subprocess pipe FDs, which only works on WinSock sockets on Windows; every `/stream` request from the Windows tray app returned a `200` followed by an immediate SSE `exit` event with an `OSError`. Replaced with reader threads + `queue.Queue`, which behaves identically on POSIX and works on Windows.
+- **Windows "Copy Token" produced garbled clipboard contents.** `clip.exe` was receiving UTF-16LE bytes without a BOM, so it interpreted them as the active OEM codepage — paste returned NUL-interleaved gibberish for ASCII tokens. Switched to PowerShell `Set-Clipboard`, which is Unicode-safe.
+- **`/stream` no longer leaks the subprocess when the client disconnects.** Closing the SSE connection now kills the running command instead of letting it keep producing output into a dead socket until natural completion or `timeout`.
+- **Windows config file is now ACL-restricted** to the current user only (`icacls` parity with the macOS `chmod 0o600`).
+- **`/stream` terminal `proc.wait()` is bounded** (1 s) so a child that closes stdout/stderr but keeps running can no longer hang the handler.
+- **Large stdin no longer deadlocks `/stream`.** Stdin is now written from a dedicated thread, so writes that exceed the pipe buffer don't block the reader loop.
+- **Non-ASCII `Authorization` payload returns `401`** instead of leaking a `400` with a `TypeError` message from `hmac.compare_digest`.
+- **Request body size is capped at 16 MiB** (`413` over the cap) to prevent local memory-exhaustion DoS.
+
 ## [0.3.0] — 2026-05-17
 
 Adds Windows support and a one-line installer on both platforms. No changes to the wire protocol — every v0.2.0 client keeps working.
@@ -62,6 +76,7 @@ Initial release.
 - macOS menu bar app (`bridge_app.py`) with Start / Stop / Quit.
 - `py2app` configuration to bundle a standalone `.app`.
 
+[0.3.1]: https://github.com/ikangai/web2cli/releases/tag/v0.3.1
 [0.3.0]: https://github.com/ikangai/web2cli/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ikangai/web2cli/releases/tag/v0.2.0
 [0.1.0]: https://github.com/ikangai/web2cli/commit/00dd574

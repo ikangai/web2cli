@@ -9,7 +9,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 
 MAX_BODY_BYTES = 16 * 1024 * 1024  # 16 MiB — enough for reasonable stdin payloads
