@@ -165,6 +165,7 @@ class Handler(BaseHTTPRequestHandler):
 
             start = time.monotonic()
             timed_out = False
+            client_gone = False
             open_streams = 2
 
             while open_streams > 0:
@@ -183,8 +184,12 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 if payload is None:
                     open_streams -= 1
-                else:
-                    self._sse(label, payload.decode("utf-8", errors="replace"))
+                elif not self._sse(label, payload.decode("utf-8", errors="replace")):
+                    # Client disconnected — don't let the subprocess keep
+                    # running on the server with no one consuming its output.
+                    proc.kill()
+                    client_gone = True
+                    break
 
             if timed_out:
                 # Drain any chunks the reader threads queued before/after the
@@ -203,6 +208,14 @@ class Handler(BaseHTTPRequestHandler):
                     proc.wait(timeout=1)
                 except subprocess.TimeoutExpired:
                     pass
+
+            if client_gone:
+                # Reap the killed child; nothing to send (no client).
+                try:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
+                return
 
             exit_code = None if timed_out else proc.wait()
             self._sse_exit(exit_code, timed_out)
@@ -224,8 +237,9 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
             self.wfile.write(b"\n\n")
             self.wfile.flush()
+            return True
         except (BrokenPipeError, ConnectionResetError, OSError):
-            pass
+            return False
 
     def _sse_exit(self, exit_code, timed_out, error=None):
         data = {"exit_code": exit_code, "timed_out": timed_out}
