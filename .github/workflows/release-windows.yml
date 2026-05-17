@@ -14,9 +14,9 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -34,7 +34,7 @@ jobs:
           Compress-Archive -Path dist\WebCLIBridge.exe -DestinationPath dist\WebCLIBridge-windows-x64.zip -Force
 
       - name: Upload as workflow artifact (always)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: WebCLIBridge-windows-x64
           path: dist/WebCLIBridge-windows-x64.zip

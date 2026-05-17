@@ -8,6 +8,8 @@ Output: dist/WebCLIBridge.app — drag into /Applications.
 """
 from setuptools import setup
 
+from server import __version__ as VERSION
+
 APP = ["bridge_app.py"]
 OPTIONS = {
     "argv_emulation": False,
@@ -15,8 +17,8 @@ OPTIONS = {
         "CFBundleName": "WebCLIBridge",
         "CFBundleDisplayName": "Web CLI Bridge",
         "CFBundleIdentifier": "com.martintreiber.webclibridge",
-        "CFBundleVersion": "0.3.0",
-        "CFBundleShortVersionString": "0.3.0",
+        "CFBundleVersion": VERSION,
+        "CFBundleShortVersionString": VERSION,
         "LSUIElement": True,
         "NSHumanReadableCopyright": "",
     },

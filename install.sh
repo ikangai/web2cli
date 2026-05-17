@@ -34,6 +34,19 @@ if [ ! -t 0 ] && [ -r /dev/tty ]; then
   exec </dev/tty
 fi
 
+if [ "${1:-}" = "uninstall" ] || [ "${1:-}" = "--uninstall" ] || [ "${WEB2CLI_UNINSTALL:-}" = "1" ]; then
+  info "${BOLD}Uninstalling ${APP_NAME}${RESET}"
+  if [ -e "$TARGET" ]; then
+    osascript -e "tell application \"${APP_NAME}\" to quit" 2>/dev/null || true
+    sleep 1
+    sudo rm -rf "$TARGET"
+    ok "Removed ${TARGET}. Config left at ~/Library/Application Support/${APP_NAME}/."
+  else
+    ok "Nothing to uninstall (no ${TARGET})."
+  fi
+  exit 0
+fi
+
 info "${BOLD}Installing ${APP_NAME}${RESET}"
 
 TMP="$(mktemp -d)"

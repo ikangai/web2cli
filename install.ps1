@@ -24,6 +24,22 @@
         Fail 'PowerShell 5.1+ required'
     }
 
+    if ($env:WEB2CLI_UNINSTALL -eq '1') {
+        Write-Host "Uninstalling $AppName" -ForegroundColor Cyan
+        Get-Process -Name $AppName -ErrorAction SilentlyContinue | Stop-Process -Force
+        Start-Sleep -Milliseconds 500
+        if (Test-Path $ShortcutPath) {
+            Remove-Item -Force $ShortcutPath
+        }
+        if (Test-Path $InstallDir) {
+            Remove-Item -Recurse -Force $InstallDir
+            Write-Host "Removed $InstallDir. Config left at %LOCALAPPDATA%\$AppName\." -ForegroundColor Green
+        } else {
+            Write-Host 'Nothing to uninstall.' -ForegroundColor Green
+        }
+        return
+    }
+
     Write-Host "Installing $AppName" -ForegroundColor Cyan
     Write-Host 'Looking up latest release...'
 

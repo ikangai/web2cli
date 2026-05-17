@@ -13,9 +13,7 @@ from tkinter import messagebox, simpledialog
 import pystray
 from PIL import Image, ImageDraw
 
-from server import Handler
-
-VERSION = "0.3.0"
+from server import Handler, __version__ as VERSION
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 

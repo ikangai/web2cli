@@ -8,6 +8,8 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+__version__ = "0.3.0"
+
 
 def _token():
     return os.environ.get("WEB_CLI_BRIDGE_TOKEN") or None

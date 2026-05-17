@@ -26,6 +26,20 @@ Installs `WebCLIBridge.exe` into `%LOCALAPPDATA%\Programs\WebCLIBridge\` (no adm
 
 Both pull the latest pre-built bundle from [GitHub Releases](https://github.com/ikangai/web2cli/releases). Re-running either one-liner upgrades in place. For the bare server on other platforms see [Run](#run) below.
 
+**Uninstall:**
+
+```bash
+# macOS
+curl -fsSL https://raw.githubusercontent.com/ikangai/web2cli/main/install.sh | sh -s -- uninstall
+```
+
+```powershell
+# Windows
+$env:WEB2CLI_UNINSTALL='1'; irm https://raw.githubusercontent.com/ikangai/web2cli/main/install.ps1 | iex
+```
+
+Removes the bundle / executable and Start Menu shortcut. Config files at `~/Library/Application Support/WebCLIBridge/` (macOS) and `%LOCALAPPDATA%\WebCLIBridge\` (Windows) are kept.
+
 ## Components
 
 - `server.py` — the bridge. Pure Python stdlib, no dependencies.
