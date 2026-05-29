@@ -832,7 +832,7 @@ Expected: `1 passed, 1 skipped` (the gated test skips because `WCB_LIVE_SMOKE` i
 Then verify the four canonical run commands the rest of the plan relies on all succeed:
 
 ```
-cd /Users/martintreiber/Documents/Development/web_cli_bridge/.worktrees/persistent-claude-session && python3 -m pytest -q && echo "===UNIT===" && python3 -m pytest -q tests/unit && echo "===INTEGRATION===" && python3 -m pytest -q tests/integration && echo "===LIVE===" && python3 -m pytest -q tests/live</parameter>
+cd /Users/martintreiber/Documents/Development/web_cli_bridge/.worktrees/persistent-claude-session && python3 -m pytest -q && echo "===UNIT===" && python3 -m pytest -q tests/unit && echo "===INTEGRATION===" && python3 -m pytest -q tests/integration && echo "===LIVE===" && python3 -m pytest -q tests/live
 ```
 
 Expected: the full run reports all tests passing with `1 skipped` (the live gate); each tier sub-run is green; `===UNIT===`, `===INTEGRATION===`, `===LIVE===` separators all print (exit code 0).
@@ -862,9 +862,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Pinned constants the fixtures and `fake_claude.sh` carry verbatim (claude 2.1.156): `esc to interrupt`, `⏵⏵ bypass permissions on (shift+tab to cycle)` (IDLE suffix `· ← for agents`, WORKING suffix `· esc to interrupt`), the rising spinner `✻ Smooshing… (<N>s · thinking)`, `Is this a project you created or one you trust?`, `❯ 1. Yes, I trust this folder`, markers `⏺`/`⎿`, `claude --resume <uuid>`, the 28-byte no-newline probe `{"ok":true,"probe":"wcbcal"}`, and `M-Enter` keeping `lineONE`/`lineTWO` unsent. These match the §3 SHARED CONTRACT exactly.
 - `fake_claude.sh` writes `{"tool":"echo","envelope":{"ok":true},"turn_uuid":"<uuid>"}` (satisfies the §3 read-back contract: `tool:str`, `envelope` truthy, `turn_uuid` echoed) and exercises the `.part`→rename edge so rendezvous-docsync's `read_envelope_bytes`/`await_envelope` and turn-protocol-fsm's turn-protocol tests have a real completion edge to poll.
 
-I now have all the calibration details. Let me determine the global task numbering. The instruction says to start at Task 5 (component's authored tasks were 0-4, so the preceding component took global numbers up through 4). I'll renumber: Task 0→5, Task 1→6, Task 2→7, Task 3→8, Task 4→9.
 
-Now I'll apply the relevant FIXes that touch this component:
+**Critique fixes applied to this component:**
 
 1. **fake_claude.sh de-duplication FIX**: Skip Task 0 (the harness) since it's owned by the test-scaffold component (skeleton Phase-0). The critique explicitly says de-duplicate to ONE fake_claude.sh owned upstream, carrying the SIGINT trap, canonical footer tokens, and a rising-timer mode. So this component must NOT re-author fake_claude.sh/conftest. I'll drop the old Task 0 and depend on the upstream harness.
 
@@ -884,11 +883,10 @@ Now I'll apply the relevant FIXes that touch this component:
 
 9. **rising-timer fake mode (risk #2) FIX**: This belongs to the upstream harness owner. I'll note the dependency but not author fake_claude.sh. However, since this component's capture tests can exercise it, I'll reference the canonical token set the upstream harness provides.
 
-Let me emit the renumbered tasks.
 
 ---
 
-# Implementation Plan — Component: `tmux-client` (`tmux_session.py`) [continued]
+## Component: tmux-client (`tmux_session.py`)
 
 > Source design: `/Users/martintreiber/Documents/Development/web_cli_bridge/.worktrees/persistent-claude-session/docs/plans/2026-05-29-persistent-claude-session-design.md`
 > Skeleton contract: §3 "TmuxClient (`tmux_session.py`)", §2(b) fake-claude integration tier.
@@ -1712,7 +1710,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - **Risk coverage delivered here:** #8 (T8 pipe-pane sink + log perms + symlink refusal), #9 (T7 literal `-l … --`), #10 (T7 named-key answers + send_prompt), #11 (T5 has-session-only liveness + socket_path, T6 option-default-not-dead), #12 (T8 re-pipe idempotency via `pane_pipe()==1`), #13 (T5 retryable vs authoritative `_TmuxError`), plus #2 infra (T6 `capture_pane`/`alternate_on==0`; the rising-spinner-timer fake mode and the DEAD multi-poll/`pane_dead` corroboration live in the test-scaffold harness and the turn-protocol-fsm stream loop respectively).
 - **Run the whole component:** `cd /Users/martintreiber/Documents/Development/web_cli_bridge/.worktrees/persistent-claude-session && python3 -m pytest -q tests/integration/test_tmux_client.py` (skips automatically if `tmux` is absent; verified present as tmux 3.6a on the target machine).
 
-I have the design contract confirmed. Now I have everything needed to emit the renumbered tasks (10-18) with the critique fixes applied. The key fixes touching this component:
+**Critique fixes applied to this component:**
 
 - **classify() signature**: every call site passes `composer_seen` (Tasks 10 `_state`/`is_busy`, 14 `_await_ready`, 16 `list_sessions`).
 - **`_Session` field consolidation**: add `shell_pid`, `composer_seen`, `_gone_strikes`, `log_offset_base`, `_claimed` from the first task.
@@ -1724,7 +1722,6 @@ I have the design contract confirmed. Now I have everything needed to emit the r
 - **`/list` brief cache** + **`log_bytes`/`log_offset_base`** wiring.
 - Pin canonical fake_claude.sh + footer tokens; conftest import mode; ordering notes.
 
-Here are the renumbered component tasks.
 
 ---
 
@@ -3384,7 +3381,6 @@ EOF
 - **Ordering note for the assembler:** the cleanup-security dispatcher/security-ladder wiring (`server.Handler(SessionMixin, ...)` + `_dispatch_session` + CORS/auth, pinned env var `WCB_ALLOWED_ORIGINS`) must precede the rendezvous-docsync `_session_get_envelope` and turn-protocol SSE/send-key handlers (all `_do_*`, routed through the one dispatcher). This component's Tasks 10–17 have no HTTP dependency; Task 18's handler bodies are tested in isolation via a stub and do not require the dispatcher to exist yet, but the dispatcher must route to `_do_create`/`_do_list` when it lands.
 - **Out of scope (other components):** turn protocol / `_run_turn_locked` (turn-protocol-fsm, sole owner of the held-lock turn body — calls rendezvous-docsync's `stage_turn`/`build_turn_prompt`/`await_envelope`), doc-staging + envelope read-back + sentinel echo wiring (rendezvous-docsync), SSE stream loop + DEAD multi-poll corroboration (turn-protocol-fsm), reaper + interrupt + replay-offset rotation + dispatcher/security (cleanup-security).
 
-The worktree exists. Now I'll produce the renumbered component output. Local Tasks 1-10 → global Tasks 19-28.
 
 ## Task 19 — fsm.strip_screen + fsm.footer_of over real captures
 
@@ -4898,7 +4894,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"`
 
 **Owned artifacts:** `fsm.py` (created in full, Tasks 19–22), `tests/unit/test_fsm_*.py`, `tests/integration/test_turn_protocol.py`, `test_session_stream_sse.py`, `test_session_stream_reasons.py`, `test_send_key.py`. **Methods ADDED to shared modules:** `session_registry._Registry.run_turn`/`run_turn_locked`/`_run_turn_locked`/`_await_completion`/`mint_turn_uuid`, exception `SessionBusy`, `create(...socket_override)` extension; `session_endpoints.SessionMixin._do_stream`/`_do_send_key`/`_write_sse`. **Consumed from siblings (signatures matched):** `rendezvous.stage_turn`/`build_turn_prompt`/`await_envelope`/`read_envelope_bytes`/`verify_envelope_sentinel` (rendezvous-docsync); `TmuxClient.capture_pane`/`send_prompt`/`send_keys`/`send_text`/`set_option`/`has_session`/`pane_dead` + `NAMED_KEYS` (tmux-client); `registry.get_or_reconstruct`/`create`/`_Session.turn_lock`/`pane`/`rendezvous_dir`, `base_dir` (registry-lifecycle); the canonical `_dispatch_session`/`_session_cors`/`_check_cap`/`_send`/`_allowed_origins` and `server.Handler(SessionMixin, …)` wiring + the canonical `tests/fake_claude.sh` (cleanup-security + test-scaffold). **Global-order dependency:** test-scaffold → paths + fsm → tmux-client → registry-lifecycle → rendezvous-docsync → cleanup-security dispatcher/security wiring → THIS component's Tasks 23–28.
 
-I have the design and the authored tasks. The critique fixes touching this `rendezvous-docsync` component are clear. Let me apply them and renumber starting at Task 29.
+**Critique fixes applied to this `rendezvous-docsync` component:**
 
 Key fixes touching this component:
 - **FIX (YAGNI/wire sentinel):** Wire `verify_envelope_sentinel` into the read-back/get-envelope path (Task D/I) or it's untraceable gold-plating — I'll wire it into `read_envelope_bytes`.
@@ -4913,7 +4909,6 @@ Key fixes touching this component:
 - **FIX (replay offset base):** Not owned here; cross-ref only.
 - **FIX (`mint_nonce` is `mint_cap`/`mint_nonce`):** keep cross-refs.
 
-Now I'll emit the renumbered tasks (A→29, B→30, ... K→39), plus the new 409 doc_not_staged task. Let me write them out.
 
 ## Task 29 — `verify_base_dir` + base-dir bootstrap (lstat 0700, owned by euid, not a symlink)
 
@@ -6910,7 +6905,6 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Task 38 (`_do_get_envelope`) is named `_do_*` and routed through the cleanup-security component's canonical `_dispatch_session`/`_require_session`/`_allowed_origins`/`_session_cors` + error ladder; it does NOT define a second dispatcher. CORS origin env var is `WCB_ALLOWED_ORIGINS`. ORDER Task 38 AFTER: cleanup-security dispatcher wiring (`server.Handler(SessionMixin, …)`), registry-lifecycle `_Session`/`REGISTRY` shell + `create`, and Task 33.
 - Tasks 39–40 touch the separate rwa artifact `/Users/martintreiber/Documents/Development/rewritable/seeds/rewritable.html` (no Python dependency). Each now has an AUTOMATED static-source gate test (under `tests/unit/`, grep-style, mirroring `test_packaging.py`) giving a real red→green cycle; the in-browser checks are SECONDARY. Task 40's manual verification needs the bridge's `/session/*` routes live (cleanup-security dispatcher + registry `create` + Task 38 landed). The DOC_UUID env-var name for CORS is `WCB_ALLOWED_ORIGINS` across server, tests, and rwa docs.
 
-I have the full 14-row risk table. Now I'll author the cleanup-security component tasks, renumbered starting at Task 41, applying the relevant FIXes (canonical naming, single-source NAMED_KEYS/tpgid/interrupt/pipe_pane_on/fake_claude.sh, the `WCB_RWA_ORIGIN` env var, `_session_*` dispatcher naming, `log_offset_base` in replay, the quit-hook static test, etc.) and rewriting cross-references to global task numbers.
 
 ## Task 41 — send-key + capture + replay endpoints (NAMED_KEYS, closed-slice replay with offset base)
 
