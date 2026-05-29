@@ -45,6 +45,61 @@ def test_create_rejects_nonexistent_cwd(tmp_base, fake_socket, fake_claude_argv,
                    claude_argv=fake_claude_argv, socket_override=fake_socket)
 
 
+# --- cwd confinement (WCB_ALLOWED_CWD_ROOT) — security hardening -------------
+# These rejection cases raise at the cwd gate BEFORE any tmux launch, so they
+# need no tmux. With bypassPermissions the cwd is the agent's reach.
+
+def test_create_rejects_cwd_outside_allowed_root(tmp_path, monkeypatch):
+    root = tmp_path / "allowed"; root.mkdir()
+    outside = tmp_path / "outside"; outside.mkdir()
+    monkeypatch.setenv("WCB_ALLOWED_CWD_ROOT", str(root))
+    reg = sr._Registry(base=str(tmp_path))
+    with pytest.raises(ValueError):
+        reg.create(cwd=str(outside), cols=80, rows=24,
+                   claude_argv=["bash", "-c", ":"], socket_override="wcb_cwd1")
+
+
+def test_create_rejects_cwd_symlink_escape(tmp_path, monkeypatch):
+    root = tmp_path / "allowed"; root.mkdir()
+    secret = tmp_path / "secret"; secret.mkdir()
+    link = root / "esc"
+    link.symlink_to(secret)               # inside root by name, escapes by realpath
+    monkeypatch.setenv("WCB_ALLOWED_CWD_ROOT", str(root))
+    reg = sr._Registry(base=str(tmp_path))
+    with pytest.raises(ValueError):
+        reg.create(cwd=str(link), cols=80, rows=24,
+                   claude_argv=["bash", "-c", ":"], socket_override="wcb_cwd2")
+
+
+def test_create_unset_root_allows_any_existing_dir(tmp_path, monkeypatch):
+    # Default-off: with WCB_ALLOWED_CWD_ROOT unset, the cwd gate does not fire
+    # (a non-dir still fails; an existing dir passes the gate). We assert the
+    # gate is a no-op by reaching the NEXT failure (max-sessions) for an
+    # arbitrary existing dir outside any root.
+    monkeypatch.delenv("WCB_ALLOWED_CWD_ROOT", raising=False)
+    monkeypatch.setattr(sr, "MAX_SESSIONS", 0)
+    reg = sr._Registry(base=str(tmp_path))
+    with pytest.raises(sr._MaxSessionsReached):     # NOT ValueError -> cwd gate passed
+        reg.create(cwd=str(tmp_path), cols=80, rows=24,
+                   claude_argv=["bash", "-c", ":"], socket_override="wcb_cwd3")
+
+
+@requires_tmux
+def test_create_accepts_cwd_under_allowed_root(tmp_base, fake_socket,
+                                               fake_claude_argv, monkeypatch):
+    sub = tmp_base / "proj"; sub.mkdir()
+    monkeypatch.setenv("WCB_ALLOWED_CWD_ROOT", str(tmp_base))
+    monkeypatch.setattr(paths, "base_dir", lambda: str(tmp_base))
+    reg = sr._Registry(base=str(tmp_base))
+    s = reg.create(cwd=str(sub), cols=100, rows=30,
+                   claude_argv=fake_claude_argv, socket_override=fake_socket)
+    try:
+        assert s.cwd == str(sub)
+        assert s.tmux.has_session("t") is True
+    finally:
+        s.tmux.kill_server()
+
+
 def test_create_max_sessions_429(tmp_base, fake_claude_argv, monkeypatch):
     monkeypatch.setattr(paths, "base_dir", lambda: str(tmp_base))
     monkeypatch.setattr(sr, "MAX_SESSIONS", 0)

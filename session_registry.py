@@ -385,6 +385,22 @@ class _Registry:
         if not os.path.isdir(rcwd):
             raise NotADirectoryError(cwd)
 
+        # Optional cwd confinement (security hardening, default-off). The session
+        # runs claude with --permission-mode bypassPermissions, so the working
+        # dir is effectively the agent's reach. When WCB_ALLOWED_CWD_ROOT is set,
+        # the caller-supplied cwd is realpath-confined under it (assert_confined
+        # resolves symlinks/.. so a traversal cannot escape the allowed root);
+        # a cwd outside the root is a ValueError -> the HTTP layer returns 400.
+        # Unset => any existing dir (prior behaviour). Enforced HERE at the single
+        # create() chokepoint so the test socket_override seam cannot bypass it.
+        cwd_root = os.environ.get("WCB_ALLOWED_CWD_ROOT")
+        if cwd_root:
+            try:
+                paths.assert_confined(rcwd, cwd_root)
+            except paths.PathSafetyError:
+                raise ValueError(
+                    "cwd %r escapes WCB_ALLOWED_CWD_ROOT" % (cwd,))
+
         # cap concurrent sessions (design (4) -> 429)
         with self._lock:
             if len(self._sessions) >= MAX_SESSIONS:
