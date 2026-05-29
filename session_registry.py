@@ -145,6 +145,44 @@ def stage_turn(tmux, base, session_dir_path, turn_uuid, persisted_bytes,
     return doc
 
 
+def build_turn_prompt(instruction, doc_path_abs, env_path_abs, turn_uuid) -> str:
+    """The per-turn PRODUCTION prompt. claude READS doc.<uuid>.html (fresh, not
+    memory), produces an edit envelope, and WRITES env.<uuid>.json via a
+    .part->rename completion edge. The gen sentinel + turn_uuid must be echoed
+    verbatim so the bridge can reject a stale/mis-targeted write.
+
+    NOTE: the fake-claude `WRITE {env} {uuid}` template used by the test harness
+    is a fixture only; production uses THIS prompt.
+    """
+    part = env_path_abs + ".part"
+    return (
+        "You are editing an HTML document through a file rendezvous.\n\n"
+        f"1. Read the CURRENT document now from this exact absolute path "
+        f"(do not rely on memory of any earlier version):\n   {doc_path_abs}\n\n"
+        "2. The document contains a comment of the form "
+        f"`<!-- rwa:gen {turn_uuid} -->`. Copy that uuid verbatim.\n\n"
+        f"3. Apply this instruction:\n   {instruction}\n\n"
+        "4. Produce a single edit envelope. It MUST be one of:\n"
+        '   {"tool":"apply_edits","envelope":{"version":"rwa-edit/1",'
+        '"edits":[{"find":"...","replace":"..."}]}}\n'
+        '   {"tool":"replace_document","envelope":{"version":"rwa-edit/1",'
+        '"doc":"...","reason":"..."}}\n'
+        "   Each `find` string MUST be copied byte-exact from the document you "
+        "just read — do not reflow, re-indent, or re-quote it.\n\n"
+        "5. Wrap the envelope object and add two top-level fields copied "
+        "verbatim:\n"
+        f'   "turn_uuid": "{turn_uuid}"\n'
+        f'   "gen": "{turn_uuid}"   (the uuid from the rwa:gen comment)\n\n'
+        "6. Write that JSON object using your Write tool to the SCRATCH path "
+        f"FIRST:\n   {part}\n"
+        "   then RENAME (move) it to the FINAL path:\n"
+        f"   {env_path_abs}\n"
+        "   The rename is the completion signal; do not write the final path "
+        "directly.\n\n"
+        "7. After the rename succeeds, reply with only the word DONE.\n"
+    )
+
+
 class _Session:
     def __init__(self, *, sid, cap, nonce, socket, pane, cwd,
                  rendezvous_dir, log_path, created_at, tmux):
