@@ -100,13 +100,33 @@ def _sweep_stale(session_dir_path, base, keep_doc_uuid=None):
             pass
 
 
-def stage_turn(tmux, base, session_dir_path, turn_uuid, persisted_bytes) -> str:
+class DocNotStaged(Exception):
+    """Stream requested before the rwa staged the current-turn doc -> 409.
+
+    On reconstruct the staged flag is lost; the dispatcher (cleanup-security
+    component) maps this to 409 {"error":"doc_not_staged"} (design §4).
+    """
+
+
+def mark_doc_staged(session) -> None:
+    session.doc_staged = True
+
+
+def assert_doc_staged(session) -> None:
+    if not getattr(session, "doc_staged", False):
+        raise DocNotStaged("rwa must re-stage the current-turn doc")
+
+
+def stage_turn(tmux, base, session_dir_path, turn_uuid, persisted_bytes,
+               *, session=None) -> str:
     """Held-lock turn staging: sweep leftovers, inject sentinel, atomically
     put doc.<turn_uuid>.html, unlink prior env.<turn_uuid>.json, mark busy.
 
     Called by turn-protocol-fsm's _run_turn_locked, which does send-keys AFTER
     this returns (rename happens-before the prompt). Returns the staged doc
     path. tmux is a TmuxClient (or stub) exposing set_option(name, value).
+    If `session` is given, flips its doc_staged flag so the post-reconstruct
+    409 precondition (assert_doc_staged) passes for this turn.
     """
     paths.validate_turn_uuid(turn_uuid)
     _sweep_stale(session_dir_path, base, keep_doc_uuid=None)
@@ -120,6 +140,8 @@ def stage_turn(tmux, base, session_dir_path, turn_uuid, persisted_bytes) -> str:
     except FileNotFoundError:
         pass
     tmux.set_option("@wcb_turn", turn_uuid)
+    if session is not None:
+        mark_doc_staged(session)
     return doc
 
 
@@ -146,6 +168,10 @@ class _Session:
         self._gone_strikes = 0                  # reaper multi-poll corroboration
         self.log_offset_base = 0                # replay offset across rotation
         self._claimed = False                   # get_or_reconstruct hydrate guard
+        # design §4: a stream after reconstruct is refused (409 doc_not_staged)
+        # until the rwa re-stages this turn's doc. Both fresh-create and
+        # reconstruct start unstaged; stage_turn(session=s) flips it.
+        self.doc_staged = False
         # Test seam: overridden in tests; real classify path below.
         self._classify_state = None
 
