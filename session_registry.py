@@ -49,6 +49,21 @@ class _SessionBusy(Exception):
     pass
 
 
+def _ensure_session_dir(base, sid, nonce):
+    """Create the per-session rendezvous dir 0700, confined under base.
+
+    A real nonce is secrets.token_hex(8) = 16 hex; reject a malformed/tampered
+    nonce with ValueError (deterministic gate), and keep assert_confined as the
+    hard guard against any path-bound escape (risk #6/#14)."""
+    if not re.fullmatch(r"[0-9a-f]{16}", nonce or ""):
+        raise ValueError("invalid rendezvous nonce: %r" % (nonce,))
+    d = paths.session_dir(base, sid, nonce)
+    paths.assert_confined(d, base)          # returns None; raises PathSafetyError
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    os.chmod(d, 0o700)                       # defeat umask
+    return d
+
+
 class _Session:
     def __init__(self, *, sid, cap, nonce, socket, pane, cwd,
                  rendezvous_dir, log_path, created_at, tmux):
