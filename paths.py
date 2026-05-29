@@ -153,3 +153,42 @@ def put_doc(session_dir_path, base, turn_uuid, data: bytes) -> str:
         os.close(fd)
     os.replace(part, final)                # atomic within the same dir
     return final
+
+
+# --- envelope exception classes (shared by gen-sentinel + read-back) ---------
+
+class EnvelopeRejected(Exception):
+    """symlink / owner / mode / nlink / uuid / gen mismatch / bad shape -> 422."""
+
+
+# --- rendezvous payload: gen sentinel ---------------------------------------
+
+GEN_SENTINEL_RE = re.compile(rb"<!-- rwa:gen [0-9a-f-]{36} -->")
+
+
+def inject_gen_sentinel(doc: bytes, turn_uuid) -> bytes:
+    """Embed exactly one `<!-- rwa:gen <uuid> -->` comment.
+
+    Replaces a prior sentinel if present, else appends. Caller stages the
+    result; the prompt requires copying the uuid back into envelope.gen.
+    """
+    validate_turn_uuid(turn_uuid)
+    if b"\r" in doc:
+        raise ValueError("doc must be \\n-only before sentinel injection")
+    tag = f"<!-- rwa:gen {turn_uuid} -->".encode()
+    if GEN_SENTINEL_RE.search(doc):
+        return GEN_SENTINEL_RE.sub(tag, doc, count=1)
+    body = doc.rstrip(b"\n")
+    return body + b"\n" + tag + b"\n"
+
+
+def verify_envelope_sentinel(obj: dict, turn_uuid) -> None:
+    """Reject (422) any envelope whose `gen` != the staged turn_uuid.
+
+    Called by read_envelope_bytes (Task 33) so the echo guard is wired into
+    the read path, not only tested in isolation (closes risk #4).
+    """
+    if obj.get("gen") != turn_uuid:
+        raise EnvelopeRejected(
+            f"gen sentinel mismatch: got {obj.get('gen')!r} want {turn_uuid!r}"
+        )
