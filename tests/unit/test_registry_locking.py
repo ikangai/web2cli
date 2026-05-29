@@ -3,6 +3,7 @@ import time
 import types
 import pytest
 
+import paths
 import session_registry as sr
 
 _COMPOSER_SCREEN = (
@@ -304,3 +305,51 @@ def test_list_sessions_brief_cache(monkeypatch):
     monkeypatch.setattr(sr, "LIST_CACHE_TTL", 0.0)   # expire immediately
     reg.list_sessions()
     assert sum(probes) == 2
+
+
+def test_delete_rejects_cap_mismatch():
+    reg = sr._Registry()
+    s = _mk_session(sid="2" * 32, cap="right" + "0" * 59)
+    s.status = "READY"
+    with reg._lock:
+        reg._sessions[s.sid] = s
+    with pytest.raises(PermissionError):
+        reg.delete("2" * 32, "wrong" + "0" * 59)
+    assert s.sid in reg._sessions          # not torn down on cap mismatch
+
+
+def test_delete_refuses_when_busy():
+    reg = sr._Registry()
+    s = _mk_session(sid="3" * 32, cap="k" * 64)
+    s.status = "READY"
+    with reg._lock:
+        reg._sessions[s.sid] = s
+    s.turn_lock.acquire()
+    try:
+        with pytest.raises(sr._SessionBusy):
+            reg.delete("3" * 32, "k" * 64)
+    finally:
+        s.turn_lock.release()
+    assert s.sid in reg._sessions
+
+
+def test_delete_refuses_unconfined_dir(tmp_base, monkeypatch):
+    monkeypatch.setattr(paths, "base_dir", lambda: str(tmp_base))
+    reg = sr._Registry(base=str(tmp_base))
+    killed = []
+
+    class _T(_StubTmux):
+        def kill_server(self):
+            killed.append(True)
+        def socket_path(self):
+            return None
+
+    s = _mk_session(sid="4" * 32, cap="k" * 64,
+                    rendezvous_dir="/etc", tmux=_T())
+    s.status = "READY"
+    with reg._lock:
+        reg._sessions[s.sid] = s
+    with pytest.raises(PermissionError):
+        reg.delete("4" * 32, "k" * 64)
+    import os as _os
+    assert _os.path.isdir("/etc")          # /etc must NOT have been rm'd

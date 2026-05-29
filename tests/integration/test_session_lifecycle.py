@@ -149,3 +149,18 @@ def test_readiness_timeout_raises(tmp_base, monkeypatch):
     with pytest.raises(sr._ReadinessTimeout):
         reg.create(cwd=str(tmp_base), cols=80, rows=24,
                    claude_argv=["bash", "-c", ":"], socket_override="wcb_nr")
+
+
+@requires_tmux
+def test_delete_tears_down_confined(tmp_base, fake_socket, fake_claude_argv,
+                                    monkeypatch):
+    monkeypatch.setattr(paths, "base_dir", lambda: str(tmp_base))
+    reg = sr._Registry(base=str(tmp_base))
+    s = reg.create(cwd=str(tmp_base), cols=80, rows=24,
+                   claude_argv=fake_claude_argv, socket_override=fake_socket)
+    rdir = s.rendezvous_dir
+    assert os.path.isdir(rdir)
+    reg.delete(s.sid, s.cap)
+    assert s.tmux.has_session("t") is False
+    assert not os.path.exists(rdir)
+    assert s.sid not in reg._sessions

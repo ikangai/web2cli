@@ -5,8 +5,10 @@ Two-level locking: a module-level structural Lock guards dict mutation ONLY
 (never wraps tmux I/O or a stream loop); a per-_Session turn Lock serializes
 turns. See design (1) "Registry & locking".
 """
+import hmac
 import os
 import re
+import shutil
 import stat
 import threading
 import time
@@ -40,6 +42,10 @@ class _NotFound(Exception):
 
 
 class _RendezvousRedirect(Exception):
+    pass
+
+
+class _SessionBusy(Exception):
     pass
 
 
@@ -349,6 +355,50 @@ class _Registry:
             s.nonce = nonce
             s.rendezvous_dir = rdir
             s.log_path = os.path.join(rdir, "log")
+
+    def delete(self, sid, cap):
+        """Confined teardown: cap match, refuse if busy, kill-server, unlink the
+        socket, rm -rf the dir ONLY if it realpath-confines under base."""
+        paths.validate_session_id(sid)
+        with self._lock:
+            s = self._sessions.get(sid)
+        if s is None:
+            raise _NotFound(sid)
+
+        if not s.cap or not isinstance(cap, str):
+            raise PermissionError("cap required")
+        try:
+            if not hmac.compare_digest(s.cap, cap):
+                raise PermissionError("cap mismatch")
+        except (TypeError, ValueError):
+            raise PermissionError("cap mismatch")
+
+        if s.turn_lock.locked():
+            raise _SessionBusy(sid)
+
+        try:
+            s.tmux.kill_server()
+        except Exception:
+            pass
+        sock_path = self._socket_path(s.socket)        # reconciliation B
+        if sock_path:
+            try:
+                os.unlink(sock_path)
+            except OSError:
+                pass
+
+        if s.rendezvous_dir:                            # reconciliation A
+            try:
+                paths.assert_confined(s.rendezvous_dir, self._base)
+            except paths.PathSafetyError:
+                raise PermissionError(
+                    "rendezvous dir not confined: %s" % s.rendezvous_dir)
+            shutil.rmtree(s.rendezvous_dir, ignore_errors=True)
+
+        with self._lock:
+            if self._sessions.get(sid) is s:
+                del self._sessions[sid]
+        self._list_cache = None                         # invalidate /list cache
 
     @staticmethod
     def _socket_path(socket):
