@@ -8,8 +8,8 @@ path under a verified 0700 base dir. Security-critical (design §1 identity,
 Build-order note: the implementation plan referenced this module as a hard
 dependency of the registry but never authored a task for it; this fills that
 gap with the path-safety + identity surface the registry needs. The rendezvous
-payload helpers (env_path/doc_path/read_envelope_bytes/put_doc/...) belong to
-the later rendezvous-docsync component and are NOT defined here.
+payload helpers (env_path/doc_path/read_envelope_bytes/put_doc/...) are added
+here by the rendezvous file-primitives tasks.
 """
 import os
 import re
@@ -119,3 +119,37 @@ def assert_confined(path, base):
     rp = os.path.realpath(path)
     if rp != rb and not rp.startswith(rb + os.sep):
         raise PathSafetyError("path escapes base: %r not under %r" % (path, base))
+
+
+# --- rendezvous payload: doc staging ----------------------------------------
+
+def doc_path(session_dir_path, turn_uuid) -> str:
+    return os.path.join(session_dir_path, f"doc.{turn_uuid}.html")
+
+
+def put_doc(session_dir_path, base, turn_uuid, data: bytes) -> str:
+    """Atomically stage doc.<turn_uuid>.html: write .part (O_NOFOLLOW, 0600)
+    then os.replace to the final name.
+
+    Asserts \\n-only (no \\r) so anchor bytes match canonLF(persistDoc).
+    Realpath-confines both the .part and final path under base first.
+    """
+    validate_turn_uuid(turn_uuid)          # rejects ../ , %, NUL, etc.
+    if not isinstance(data, (bytes, bytearray)):
+        raise TypeError("doc payload must be bytes")
+    if b"\r" in data:
+        raise ValueError("doc payload must be \\n-only (contains \\r)")
+    final = doc_path(session_dir_path, turn_uuid)
+    part = final + ".part"
+    assert_confined(final, base)
+    assert_confined(part, base)
+    # O_NOFOLLOW + O_TRUNC + the confined session dir (0700) defeat symlink swaps.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+    fd = os.open(part, flags, 0o600)
+    try:
+        os.write(fd, bytes(data))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(part, final)                # atomic within the same dir
+    return final
