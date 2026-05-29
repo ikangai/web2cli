@@ -76,3 +76,62 @@ def test_tmux_binary_missing_is_authoritative_classified(tmp_path):
     # non-retryable _TmuxError carrying the cause.
     assert ei.value.retryable is False
     assert "tmux" in str(ei.value).lower()
+
+
+def test_capture_pane_returns_composer(fake_socket, tmp_path):
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    screen = _wait_for(c, "t", IDLE)
+    assert "❯ " in screen
+
+
+def test_alternate_on_is_zero(fake_socket, tmp_path):
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    # The whole inline-capture model depends on alternate_on == 0.
+    assert c.alternate_on("t") == 0
+
+
+def test_pane_current_command(fake_socket, tmp_path):
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    cmd = c.pane_current_command("t")
+    # The fake runs under bash; the real binary reports 'claude.exe'. Either
+    # way it is a non-empty command name (DEAD discriminator is shell-relative).
+    assert isinstance(cmd, str) and cmd != ""
+
+
+def test_pane_dead_false_while_running(fake_socket, tmp_path):
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    assert c.pane_dead("t") is False
+
+
+def test_tpgid_positive_and_is_a_pgid(fake_socket, tmp_path):
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    pg = c.tpgid("t")
+    assert pg > 0
+    # tpgid is a real process-group id (os.getpgid of the pane pid), so the
+    # guarded killpg in Task 9 targets the group, not a lone pid.
+    assert os.getpgid(os.getpgid(pg) and pg or pg) == pg  # pg is its own group's id
+
+
+def test_user_option_roundtrip(fake_socket, tmp_path):
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    c.set_option("t", "@wcb_nonce", "abc123")
+    assert c.get_option("t", "@wcb_nonce") == "abc123"
+
+
+def test_missing_option_is_default_not_dead(fake_socket, tmp_path):
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    # An unset @wcb_* option is a recoverable default (None), NOT a death signal.
+    assert c.get_option("t", "@wcb_never_set") is None

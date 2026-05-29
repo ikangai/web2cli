@@ -102,6 +102,74 @@ class TmuxClient:
         r = self._run("list-panes", "-t", name, "-F", "#{pane_id}")
         return (r.stdout or "").strip().splitlines()[0]
 
+    def _target(self, target):
+        # Accept a session name ("t") or a pane id ("%3"); both are valid -t.
+        return str(target)
+
+    def capture_pane(self, target):
+        """`capture-pane -pN` — the ONLY screen source (FSM strips it).
+
+        -N preserves trailing spaces; without it tmux trims them and the
+        composer prompt "❯ " collapses to "❯", which the FSM keys on.
+        """
+        r = self._run("capture-pane", "-p", "-N", "-t", self._target(target))
+        return r.stdout
+
+    def _display(self, target, fmt):
+        r = self._run("display-message", "-p", "-t", self._target(target), fmt)
+        return (r.stdout or "").strip()
+
+    def alternate_on(self, target):
+        """Must be 0 — claude renders inline, not on the alternate screen."""
+        v = self._display(target, "#{alternate_on}")
+        return int(v or "0")
+
+    def pane_current_command(self, target):
+        return self._display(target, "#{pane_current_command}")
+
+    def pane_dead(self, target):
+        return self._display(target, "#{pane_dead}") == "1"
+
+    def pane_pid(self, target):
+        v = self._display(target, "#{pane_pid}")
+        return int(v or "0")
+
+    def tpgid(self, target):
+        """Foreground process-GROUP id of the pane (os.getpgid of #{pane_pid}).
+
+        Canonical for the guarded killpg in Task 9 — a real pgid, never a raw
+        pid. cleanup-security must not redefine this.
+        """
+        pid = self.pane_pid(target)
+        if pid <= 0:
+            return 0
+        try:
+            return os.getpgid(pid)
+        except (ProcessLookupError, PermissionError):
+            return 0
+
+    def set_option(self, target, name, value):
+        # User options (@wcb_*) are stored per-session; survive a bridge restart.
+        self._run("set-option", "-t", self._target(target), name, value)
+
+    def get_option(self, target, name):
+        """Missing option -> None (a recoverable default, never 'dead', #11).
+
+        An unset @wcb_* user option makes tmux exit non-zero with
+        "invalid option: <name>" — that is the *absence* of a value, a
+        recoverable default, NOT a death signal. A genuinely gone session
+        (non-retryable) is likewise reported as None here; only a transient
+        fault re-raises.
+        """
+        try:
+            r = self._run("show-options", "-v", "-t", self._target(target), name)
+        except _TmuxError as e:
+            if not e.retryable or "invalid option" in str(e).lower():
+                return None
+            raise
+        out = (r.stdout or "").strip()
+        return out if out != "" else None
+
     def socket_path(self):
         """Absolute path of the -L socket (for defensive socket-clear / unlink,
         risk #11). Server must be up."""
