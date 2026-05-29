@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Windows tray app for the web2cli server. Mirrors bridge_app.py (macOS)."""
-import json
 import os
 import secrets
 import subprocess
@@ -13,66 +12,32 @@ from tkinter import messagebox, simpledialog
 import pystray
 from PIL import Image, ImageDraw
 
+import bridge_common
+from bridge_common import HOST, load_config, resolve_port, resolve_token, set_active_token
 from server import Handler, __version__ as VERSION
-HOST = "127.0.0.1"
-DEFAULT_PORT = 8765
 
-CONFIG_DIR = Path(
+CONFIG_PATH = Path(
     os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-) / "WebCLIBridge"
-CONFIG_PATH = CONFIG_DIR / "config.json"
-
-
-def load_config():
-    if CONFIG_PATH.exists():
-        try:
-            return json.loads(CONFIG_PATH.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
-    return {}
+) / "WebCLIBridge" / "config.json"
 
 
 def save_config(cfg):
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+    bridge_common.write_config_text(CONFIG_PATH, cfg)
     # Mirror the macOS chmod 0o600 — restrict to the current user only so the
     # bearer token isn't readable by other local accounts that gain access to
     # %LOCALAPPDATA% (e.g. via roaming-profile / weakened inherited ACLs).
     user = os.environ.get("USERNAME")
-    if user:
-        try:
-            subprocess.run(
-                ["icacls", str(CONFIG_PATH),
-                 "/inheritance:r", "/grant:r", f"{user}:F"],
-                check=False, capture_output=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-        except (FileNotFoundError, OSError):
-            pass
-
-
-def resolve_port(cfg):
-    env = os.environ.get("WEB_CLI_BRIDGE_PORT")
-    if env:
-        try:
-            return int(env)
-        except ValueError:
-            pass
+    if not user:
+        return
     try:
-        return int(cfg.get("port") or DEFAULT_PORT)
-    except (TypeError, ValueError):
-        return DEFAULT_PORT
-
-
-def resolve_token(cfg):
-    return os.environ.get("WEB_CLI_BRIDGE_TOKEN") or cfg.get("token") or None
-
-
-def set_active_token(token):
-    if token:
-        os.environ["WEB_CLI_BRIDGE_TOKEN"] = token
-    else:
-        os.environ.pop("WEB_CLI_BRIDGE_TOKEN", None)
+        subprocess.run(
+            ["icacls", str(CONFIG_PATH),
+             "/inheritance:r", "/grant:r", f"{user}:F"],
+            check=False, capture_output=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (FileNotFoundError, OSError):
+        pass
 
 
 def make_icon_image():
@@ -117,7 +82,7 @@ def _clip_copy(text):
 
 class BridgeApp:
     def __init__(self):
-        self.cfg = load_config()
+        self.cfg = load_config(CONFIG_PATH)
         self.port = resolve_port(self.cfg)
         self.token = resolve_token(self.cfg)
         set_active_token(self.token)
@@ -133,14 +98,14 @@ class BridgeApp:
     def _is_running(self):
         return self.httpd is not None
 
+    def _state_summary(self):
+        return bridge_common.state_summary(self._is_running(), self.port, self.token)
+
     def _tooltip(self):
-        running = self._is_running()
-        port_suffix = f" :{self.port}" if running else ""
-        token_suffix = " (auth)" if self.token else ""
-        return f"WebCLIBridge — {'running' if running else 'stopped'}{port_suffix}{token_suffix}"
+        return f"WebCLIBridge — {self._state_summary()}"
 
     def _status_text(self):
-        return f"Status: {self._tooltip().split(chr(0x2014) + ' ', 1)[1]}"
+        return f"Status: {self._state_summary()}"
 
     def _refresh(self):
         self.icon.title = self._tooltip()

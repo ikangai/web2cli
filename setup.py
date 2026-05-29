@@ -23,7 +23,7 @@ OPTIONS = {
         "NSHumanReadableCopyright": "",
     },
     "packages": ["rumps"],
-    "includes": ["server"],
+    "includes": ["server", "bridge_common"],
 }
 
 setup(

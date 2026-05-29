@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-import json
-import os
 import secrets
 import subprocess
 import threading
@@ -9,60 +7,23 @@ from pathlib import Path
 
 import rumps
 
+import bridge_common
+from bridge_common import HOST, load_config, resolve_port, resolve_token, set_active_token
 from server import Handler, __version__ as VERSION
-HOST = "127.0.0.1"
-DEFAULT_PORT = 8765
 
-CONFIG_DIR = Path.home() / "Library" / "Application Support" / "WebCLIBridge"
-CONFIG_PATH = CONFIG_DIR / "config.json"
-
-
-def load_config():
-    if CONFIG_PATH.exists():
-        try:
-            return json.loads(CONFIG_PATH.read_text())
-        except (json.JSONDecodeError, OSError):
-            pass
-    return {}
+CONFIG_PATH = (
+    Path.home() / "Library" / "Application Support" / "WebCLIBridge" / "config.json"
+)
 
 
 def save_config(cfg):
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
-    try:
-        CONFIG_PATH.chmod(0o600)
-    except OSError:
-        pass
-
-
-def resolve_port(cfg):
-    env = os.environ.get("WEB_CLI_BRIDGE_PORT")
-    if env:
-        try:
-            return int(env)
-        except ValueError:
-            pass
-    try:
-        return int(cfg.get("port") or DEFAULT_PORT)
-    except (TypeError, ValueError):
-        return DEFAULT_PORT
-
-
-def resolve_token(cfg):
-    return os.environ.get("WEB_CLI_BRIDGE_TOKEN") or cfg.get("token") or None
-
-
-def set_active_token(token):
-    if token:
-        os.environ["WEB_CLI_BRIDGE_TOKEN"] = token
-    else:
-        os.environ.pop("WEB_CLI_BRIDGE_TOKEN", None)
+    bridge_common.write_config_text(CONFIG_PATH, cfg, mode=0o600)
 
 
 class BridgeApp(rumps.App):
     def __init__(self):
         super().__init__("⚡", quit_button=None)
-        self.cfg = load_config()
+        self.cfg = load_config(CONFIG_PATH)
         self.port = resolve_port(self.cfg)
         self.token = resolve_token(self.cfg)
         set_active_token(self.token)
@@ -102,9 +63,7 @@ class BridgeApp(rumps.App):
         ]
 
     def _status_text(self, running):
-        port_suffix = f" :{self.port}" if running else ""
-        token_suffix = " (auth)" if self.token else ""
-        return f"Status: {'running' if running else 'stopped'}{port_suffix}{token_suffix}"
+        return f"Status: {bridge_common.state_summary(running, self.port, self.token)}"
 
     def _set_running(self, running):
         self.status.title = self._status_text(running)
