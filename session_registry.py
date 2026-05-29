@@ -6,6 +6,7 @@ Two-level locking: a module-level structural Lock guards dict mutation ONLY
 turns. See design (1) "Registry & locking".
 """
 import os
+import re
 import stat
 import threading
 import time
@@ -29,6 +30,14 @@ class _AlternateScreenError(Exception):
 
 
 class _ReadinessTimeout(Exception):
+    pass
+
+
+class _NotFound(Exception):
+    pass
+
+
+class _RendezvousRedirect(Exception):
     pass
 
 
@@ -224,6 +233,76 @@ class _Registry:
                 return
             time.sleep(READY_POLL)
         raise _ReadinessTimeout("composer not ready within %.0fs" % READY_TIMEOUT)
+
+    def get_or_reconstruct(self, sid):
+        """Placeholder + Event pattern (design (1), kills the dual-lock race)."""
+        paths.validate_session_id(sid)
+        with self._lock:
+            s = self._sessions.get(sid)
+            if s is None:
+                s = _Session(
+                    sid=sid, cap=None, nonce=None,
+                    socket=("wcb_" + sid), pane=None,
+                    cwd=None, rendezvous_dir=None, log_path=None,
+                    created_at=time.time(), tmux=TmuxClient("wcb_" + sid),
+                )
+                self._sessions[sid] = s
+                winner = True
+                s._claimed = True
+            elif s.status == "RECONSTRUCTING" and not s._claimed:
+                s._claimed = True
+                winner = True
+            else:
+                winner = False
+
+        if winner and s.status == "RECONSTRUCTING":
+            try:
+                self._hydrate(s)
+                s.status = "READY"
+            except Exception:
+                with self._lock:
+                    if self._sessions.get(sid) is s:
+                        del self._sessions[sid]
+                s.ready.set()
+                raise
+            finally:
+                s.ready.set()
+            return s
+
+        if s.status == "READY":
+            return s
+        s.ready.wait(timeout=READY_TIMEOUT)
+        if self._sessions.get(sid) is not s or s.status != "READY":
+            raise _NotFound(sid)
+        return s
+
+    def _hydrate(self, s):
+        """Rebuild volatile fields from tmux facts. Liveness is has-session
+        ONLY; missing @wcb_* options are recoverable defaults (risk #11)."""
+        if not s.tmux.has_session("t"):
+            raise _NotFound(s.sid)
+        s.pane = s.tmux.pane_id("t")
+        created = s.tmux.get_option("@wcb_created")
+        nonce = s.tmux.get_option("@wcb_nonce")
+        if created:
+            try:
+                s.created_at = float(created)
+            except ValueError:
+                pass
+        if nonce:
+            # RECONCILED risk #14: a real nonce is secrets.token_hex(8) = 16 hex.
+            # Reject a tampered/malformed nonce, and cross-check confinement.
+            if not re.fullmatch(r"[0-9a-f]{16}", nonce):
+                raise _RendezvousRedirect(s.sid)
+            base = self._base
+            rdir = paths.session_dir(base, s.sid, nonce)
+            try:
+                paths.assert_confined(rdir, base)   # returns None; raises on escape
+            except paths.PathSafetyError:
+                raise _RendezvousRedirect(s.sid)
+            s.nonce = nonce
+            s.rendezvous_dir = rdir
+            s.log_path = os.path.join(rdir, "log")
 
     @staticmethod
     def _socket_path(socket):

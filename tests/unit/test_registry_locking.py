@@ -131,3 +131,77 @@ def test_registry_structural_lock_never_held_during_tmux_io():
 def test_registry_module_singleton_exists():
     """CRITIQUE-FIX: single canonical singleton name is REGISTRY."""
     assert isinstance(sr.REGISTRY, sr._Registry)
+
+
+def test_get_or_reconstruct_single_winner_under_concurrency(monkeypatch):
+    """N threads racing get_or_reconstruct(sid) must share ONE _Session and
+    ONE turn_lock; only ONE thread hydrates (design risk #5)."""
+    reg = sr._Registry()
+    sid = "b" * 32
+
+    monkeypatch.setattr(sr.paths, "validate_session_id", lambda x: None)
+    hydrate_calls = []
+    barrier = threading.Barrier(8)
+
+    def fake_hydrate(s):
+        hydrate_calls.append(s.sid)
+        time.sleep(0.05)            # widen the race window
+        s.pane = "%0"
+        s.status = "READY"
+
+    monkeypatch.setattr(reg, "_hydrate", fake_hydrate)
+
+    results = []
+    lock = threading.Lock()
+
+    def worker():
+        barrier.wait()
+        s = reg.get_or_reconstruct(sid)
+        with lock:
+            results.append(s)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert hydrate_calls == [sid]
+    first = results[0]
+    assert all(r is first for r in results)
+    assert all(r.turn_lock is first.turn_lock for r in results)
+    assert first.ready.is_set()
+    assert first.status == "READY"
+
+
+def test_get_or_reconstruct_returns_existing_ready(monkeypatch):
+    reg = sr._Registry()
+    monkeypatch.setattr(sr.paths, "validate_session_id", lambda x: None)
+    s = _mk_session(sid="e" * 32)
+    s.status = "READY"
+    s.ready.set()
+    with reg._lock:
+        reg._sessions[s.sid] = s
+    called = []
+    monkeypatch.setattr(reg, "_hydrate", lambda x: called.append(1))
+    got = reg.get_or_reconstruct("e" * 32)
+    assert got is s
+    assert called == []            # already READY -> no hydrate
+
+
+def test_hydrate_rejects_tampered_nonce_outside_base(tmp_base, monkeypatch):
+    """CRITIQUE-FIX risk #14: a tampered @wcb_nonce must be rejected."""
+    monkeypatch.setattr(sr.paths, "base_dir", lambda: str(tmp_base))
+
+    class _TamperTmux(_StubTmux):
+        def has_session(self, name):
+            return True
+        def pane_id(self, name):
+            return "%0"
+
+    reg = sr._Registry(base=str(tmp_base))
+    s = _mk_session(sid="9" * 32, nonce=None, rendezvous_dir=None,
+                    tmux=_TamperTmux())
+    s.tmux.set_option("@wcb_nonce", "../../etc")
+    with pytest.raises(sr._RendezvousRedirect):
+        reg._hydrate(s)
