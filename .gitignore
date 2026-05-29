@@ -8,3 +8,7 @@ __pycache__/
 *.pyo
 *.egg-info/
 .claude/
+debug/
+fix/
+.dev-diary/
+.worktrees/
