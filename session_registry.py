@@ -183,6 +183,46 @@ def build_turn_prompt(instruction, doc_path_abs, env_path_abs, turn_uuid) -> str
     )
 
 
+def await_envelope(session_dir_path, base, turn_uuid, send_time,
+                   *, deadline, stable_ms=300, poll_ms=50) -> bytes:
+    """Poll for the renamed FINAL env.<turn_uuid>.json. Accept only a file
+    whose mtime > send_time and whose size+mtime are stable for >= stable_ms.
+    Then read it byte-exact via paths.read_envelope_bytes. Never reads a .part
+    or a stale (older) file.
+
+    Raises paths.EnvelopeNotWritten if none appears before `deadline`
+    (time.monotonic seconds).
+    """
+    env = paths.env_path(session_dir_path, turn_uuid)
+    paths.assert_confined(env, base)
+    stable_s = stable_ms / 1000.0
+    poll_s = poll_ms / 1000.0
+    last_sig = None
+    stable_since = None
+    while time.monotonic() < deadline:
+        try:
+            st = os.lstat(env)
+        except FileNotFoundError:
+            last_sig = None
+            stable_since = None
+            time.sleep(poll_s)
+            continue
+        # freshness: written by THIS turn (after we sent the prompt)
+        if st.st_mtime <= send_time:
+            time.sleep(poll_s)
+            continue
+        sig = (st.st_size, st.st_mtime)
+        if sig != last_sig:
+            last_sig = sig
+            stable_since = time.monotonic()
+            time.sleep(poll_s)
+            continue
+        if time.monotonic() - stable_since >= stable_s:
+            return paths.read_envelope_bytes(env, turn_uuid)
+        time.sleep(poll_s)
+    raise paths.EnvelopeNotWritten(env)
+
+
 class _Session:
     def __init__(self, *, sid, cap, nonce, socket, pane, cwd,
                  rendezvous_dir, log_path, created_at, tmux):
