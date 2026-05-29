@@ -11,6 +11,8 @@ gap with the path-safety + identity surface the registry needs. The rendezvous
 payload helpers (env_path/doc_path/read_envelope_bytes/put_doc/...) are added
 here by the rendezvous file-primitives tasks.
 """
+import errno
+import json
 import os
 import re
 import secrets
@@ -157,8 +159,16 @@ def put_doc(session_dir_path, base, turn_uuid, data: bytes) -> str:
 
 # --- envelope exception classes (shared by gen-sentinel + read-back) ---------
 
+class EnvelopeNotWritten(Exception):
+    """env file absent -> 404."""
+
+
 class EnvelopeRejected(Exception):
     """symlink / owner / mode / nlink / uuid / gen mismatch / bad shape -> 422."""
+
+
+class EnvelopeIncomplete(Exception):
+    """env file present but JSON not yet complete -> brief retry then 404."""
 
 
 # --- rendezvous payload: gen sentinel ---------------------------------------
@@ -192,3 +202,75 @@ def verify_envelope_sentinel(obj: dict, turn_uuid) -> None:
         raise EnvelopeRejected(
             f"gen sentinel mismatch: got {obj.get('gen')!r} want {turn_uuid!r}"
         )
+
+
+# --- rendezvous payload: byte-exact envelope read-back ----------------------
+
+def env_path(session_dir_path, turn_uuid) -> str:
+    return os.path.join(session_dir_path, f"env.{turn_uuid}.json")
+
+
+def safe_open_nofollow(path, flags) -> int:
+    """open O_NOFOLLOW, then fstat-guard regular/owner/mode/nlink.
+
+    Raises EnvelopeNotWritten on ENOENT, EnvelopeRejected on ELOOP (symlink)
+    or a failed fstat guard.
+    """
+    try:
+        fd = os.open(path, flags | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        raise EnvelopeNotWritten(path)
+    except OSError as e:
+        # ELOOP/EMLINK: O_NOFOLLOW refused a symlink. EACCES/EPERM: the file
+        # exists but is not openable under our safety contract (e.g. owner-
+        # read stripped by a hostile mode like 0o077) -> reject, never 500.
+        if e.errno in (errno.ELOOP, errno.EMLINK, errno.EACCES, errno.EPERM):
+            raise EnvelopeRejected(f"refused open: {path} ({errno.errorcode.get(e.errno)})")
+        raise
+    st = os.fstat(fd)
+    if not (stat.S_ISREG(st.st_mode)
+            and st.st_uid == os.getuid()
+            and st.st_nlink == 1
+            and not (stat.S_IMODE(st.st_mode) & 0o077)):
+        os.close(fd)
+        raise EnvelopeRejected(
+            f"fstat guard failed: reg={stat.S_ISREG(st.st_mode)} "
+            f"uid={st.st_uid} nlink={st.st_nlink} mode={oct(stat.S_IMODE(st.st_mode))}"
+        )
+    return fd
+
+
+def read_envelope_bytes(path, turn_uuid) -> bytes:
+    """Read claude's envelope verbatim with full safety guards.
+
+    Returns the ORIGINAL bytes (no re-serialization). Raises:
+      EnvelopeNotWritten  - file absent
+      EnvelopeRejected    - symlink/owner/mode/nlink/shape/uuid/gen mismatch
+      EnvelopeIncomplete  - JSON not yet parseable (writer mid-flight)
+    """
+    validate_turn_uuid(turn_uuid)
+    fd = safe_open_nofollow(path, os.O_RDONLY)
+    try:
+        chunks = []
+        while True:
+            b = os.read(fd, 65536)
+            if not b:
+                break
+            chunks.append(b)
+        raw = b"".join(chunks)
+    finally:
+        os.close(fd)
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        raise EnvelopeIncomplete(path)
+    if not (isinstance(obj, dict)
+            and isinstance(obj.get("tool"), str)
+            and obj.get("envelope")):
+        raise EnvelopeRejected("envelope shape invalid (tool/envelope)")
+    if obj.get("turn_uuid") != turn_uuid:
+        raise EnvelopeRejected(
+            f"turn_uuid mismatch: got {obj.get('turn_uuid')!r} want {turn_uuid!r}"
+        )
+    verify_envelope_sentinel(obj, turn_uuid)   # gen echo guard (Task 32) — risk #4
+    return raw
