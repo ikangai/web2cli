@@ -1,3 +1,4 @@
+import contextlib
 import os
 import pathlib
 import shutil
@@ -30,7 +31,8 @@ def capture():
 
 @pytest.fixture
 def fake_socket():
-    """Unique -L socket name per test; kill-server in teardown so no leaks."""
+    """Unique -L socket name per test; kill-server AND unlink the socket file in
+    teardown so neither server processes nor dead socket files accumulate."""
     sock = "wcbtest_" + os.urandom(4).hex()
     yield sock
     if TMUX is not None:
@@ -39,6 +41,12 @@ def fake_socket():
             stderr=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
         )
+        # kill-server leaves the AF_UNIX socket file behind; remove it too so
+        # /tmp/tmux-<uid>/ doesn't fill with inert dead sockets across runs.
+        sock_dir = os.environ.get("TMUX_TMPDIR") or "/tmp"
+        sock_path = os.path.join(sock_dir, f"tmux-{os.getuid()}", sock)
+        with contextlib.suppress(OSError):
+            os.unlink(sock_path)
 
 
 @pytest.fixture
