@@ -92,3 +92,42 @@ def test_is_busy_fsm_not_idle():
     assert s.is_busy() is True
     s._classify_state = lambda: "idle"
     assert s.is_busy() is False
+
+
+def test_registry_structural_lock_guards_dict_only():
+    reg = sr._Registry()
+    assert reg._sessions == {}
+    assert isinstance(reg._lock, type(threading.Lock()))
+
+
+def test_registry_base_param_and_self_base(tmp_path, monkeypatch):
+    """CRITIQUE-FIX: pinned constructor — base kwarg stored on self._base."""
+    monkeypatch.setattr(sr.paths, "base_dir", lambda: "/default/base")
+    reg_default = sr._Registry()
+    assert reg_default._base == "/default/base"          # falls back to base_dir()
+    reg_explicit = sr._Registry(base=str(tmp_path))
+    assert reg_explicit._base == str(tmp_path)            # explicit wins
+
+
+def test_registry_structural_lock_never_held_during_tmux_io():
+    """A blocking-tmux stub: assert the structural lock is FREE whenever tmux
+    I/O happens by checking lock.locked() from inside the stub."""
+    reg = sr._Registry()
+    observed = []
+
+    class _BlockingTmux(_StubTmux):
+        def has_session(self, name):
+            observed.append(reg._lock.locked())   # must be False
+            return True
+
+    s = _mk_session(tmux=_BlockingTmux())
+    with reg._lock:
+        reg._sessions[s.sid] = s
+    alive = reg._alive_ids([s])
+    assert alive == [s.sid]
+    assert observed == [False]
+
+
+def test_registry_module_singleton_exists():
+    """CRITIQUE-FIX: single canonical singleton name is REGISTRY."""
+    assert isinstance(sr.REGISTRY, sr._Registry)

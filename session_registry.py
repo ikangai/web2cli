@@ -8,6 +8,7 @@ turns. See design (1) "Registry & locking".
 import threading
 import time
 
+import paths
 from fsm import classify, footer_of, strip_screen
 
 
@@ -61,3 +62,30 @@ class _Session:
             return True
         state = self._state()
         return state not in ("idle", "idle_no_envelope")
+
+
+class _Registry:
+    def __init__(self, base=None):
+        self._lock = threading.Lock()           # STRUCTURAL ONLY
+        self._sessions = {}                      # sid -> _Session
+        # CRITIQUE-FIX: pinned constructor — explicit base or paths.base_dir().
+        self._base = base if base is not None else paths.base_dir()
+
+    def _snapshot(self):
+        """Copy the dict under the structural lock; release before any I/O."""
+        with self._lock:
+            return list(self._sessions.values())
+
+    def _alive_ids(self, sessions):
+        """tmux liveness probe OUTSIDE the structural lock (design (1))."""
+        alive = []
+        for s in sessions:
+            try:
+                if s.tmux.has_session("t"):
+                    alive.append(s.sid)
+            except Exception:
+                pass
+        return alive
+
+
+REGISTRY = _Registry()
