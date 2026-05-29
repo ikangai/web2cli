@@ -75,28 +75,35 @@ def classify(screen: str, footer: str, env_present: bool,
              composer_seen: bool = False) -> "tuple[str, dict]":
     """Return (state, meta). PINNED SIGNATURE — callers pass composer_seen=.
 
-    WORKING (thinking/streaming) is OR'd and positive:
-        env absent OR rising SPINNER_TIMER_RE OR FOOTER_WORKING present.
-    idle ONLY when no WORKING signal AND env_present; else idle_no_envelope.
-    The spinner verb is NEVER a gate (randomized).
+    SCREEN-ONLY working signal — env is NOT a standalone working signal here:
+    WORKING (thinking/streaming) iff a rising SPINNER_TIMER_RE OR FOOTER_WORKING
+    is present. Once settled, env_present splits idle (file present) vs
+    idle_no_envelope (file absent). "env absent => keep waiting" is the turn
+    loop's file-edge concern (await_envelope), not classify's — otherwise
+    idle_no_envelope would be unreachable and the loop could never settle. The
+    spinner verb is NEVER a gate (randomized).
     """
     timer = _spinner_timer(screen)
     meta = {"timer": timer}
 
+    # awaiting_input: a recognized menu/trust block takes precedence over the
+    # WORKING signals (the caller must be able to answer it). Detect only the
+    # explicit, calibrated blocks — never a generic 'input box present'.
+    if TRUST_PROMPT in screen or TRUST_OPTION_YES in screen:
+        meta["kind"] = "trust"
+        meta["screen"] = screen
+        return "awaiting_input", meta
+
     working = False
-    if not env_present:
-        working = True
     if FOOTER_WORKING in footer:
         working = True
     if timer is not None and prev_timer is not None and timer > prev_timer:
         working = True
 
     if working:
-        # streaming once assistant content is on screen, else thinking.
         state = "streaming" if MARKER_ASSISTANT in screen else "thinking"
         return state, meta
 
-    # Not working. Distinguish idle (env present) from idle_no_envelope.
     if env_present:
         return "idle", meta
     return "idle_no_envelope", meta

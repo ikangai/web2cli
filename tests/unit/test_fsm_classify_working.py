@@ -41,16 +41,21 @@ def test_working_even_when_idle_token_present():
     assert state in ("thinking", "streaming")  # NOT idle, despite env_present
 
 
-def test_env_absent_alone_is_working():
-    # No footer working token but env file not yet written => still WORKING
-    # (env-absent is the strongest WORKING signal).
+def test_env_absent_settled_screen_is_idle_no_envelope():
+    # RECONCILED (Task 20 vs 21 conflict): a SETTLED composer (no working
+    # footer/timer) with the env file absent is idle_no_envelope — NOT working.
+    # env-absent is NOT a standalone classify WORKING signal; "keep waiting for
+    # the file" is the turn loop's file-edge concern (await_envelope, Task 25),
+    # which treats idle_no_envelope as "settled by screen, no fresh file — poll
+    # briefly". Making env-absent classify-working would render idle_no_envelope
+    # unreachable and the loop unable to settle.
     composer = _screen("composer_ready.txt")
     footer = fsm.footer_of(composer)
     assert fsm.FOOTER_WORKING not in footer
     state, _ = fsm.classify(
         composer, footer, env_present=False, composer_seen=True
     )
-    assert state in ("thinking", "streaming")
+    assert state == "idle_no_envelope"
 
 
 def test_rising_spinner_timer_is_working():
