@@ -21,6 +21,10 @@ class _MaxSessionsReached(Exception):
     pass
 
 
+class _AlternateScreenError(Exception):
+    pass
+
+
 class _Session:
     def __init__(self, *, sid, cap, nonce, socket, pane, cwd,
                  rendezvous_dir, log_path, created_at, tmux):
@@ -142,6 +146,21 @@ class _Registry:
         # RECONCILED: pass claude_argv (the pane command IS argv — canonical
         # tmux-client contract). Real argv in prod, fake_claude_argv in tests.
         pane = tmux.new_session("t", rcwd, cols, rows, claude_argv)
+
+        # Verify the inline-capture invariant ONCE (design (1), calibration):
+        # claude renders inline (alternate_on must be 0) or capture-pane -p
+        # is not a valid view of the TUI.
+        if tmux.alternate_on(pane) != 0:
+            try:
+                tmux.kill_server()
+            except Exception:
+                pass
+            raise _AlternateScreenError("alternate_on != 0; aborting create")
+
+        # Arm pipe-pane retention to a private 0600 log. The disable-first
+        # pipe_pane_on definition is owned by the tmux-client component
+        # (re-pipe idempotency / pane_pipe()==1 tested there); here we arm it.
+        tmux.pipe_pane_on(pane, log_path)
 
         s = _Session(
             sid=sid, cap=cap, nonce=nonce, socket=socket, pane=pane,

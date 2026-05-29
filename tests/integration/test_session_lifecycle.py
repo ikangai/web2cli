@@ -52,3 +52,41 @@ def test_create_max_sessions_429(tmp_base, fake_claude_argv, monkeypatch):
     with pytest.raises(sr._MaxSessionsReached):
         reg.create(cwd=str(tmp_base), cols=80, rows=24,
                    claude_argv=fake_claude_argv, socket_override="wcb_unused")
+
+
+@requires_tmux
+def test_create_verifies_alternate_off_and_arms_pipe(tmp_base, fake_socket,
+                                                     fake_claude_argv, monkeypatch):
+    monkeypatch.setattr(paths, "base_dir", lambda: str(tmp_base))
+    reg = sr._Registry(base=str(tmp_base))
+    s = reg.create(cwd=str(tmp_base), cols=100, rows=30,
+                   claude_argv=fake_claude_argv, socket_override=fake_socket)
+    try:
+        assert s.tmux.alternate_on(s.pane) == 0
+        assert os.path.exists(s.log_path)
+        lst = os.lstat(s.log_path)
+        assert stat.S_IMODE(lst.st_mode) == 0o600
+    finally:
+        s.tmux.kill_server()
+
+
+def test_create_raises_on_alternate_on(tmp_base, monkeypatch):
+    """Pure-stub path: a tmux whose alternate_on != 0 must abort create."""
+    monkeypatch.setattr(paths, "base_dir", lambda: str(tmp_base))
+
+    class _AltTmux:
+        def __init__(self, *a, **k): pass
+        def socket_path(self): return None
+        def new_session(self, name, cwd, cols, rows, argv): return "%0"   # RECONCILED: argv
+        def has_session(self, n): return True
+        def set_option(self, *a): pass
+        def get_option(self, n): return None
+        def alternate_on(self, t): return 1          # the bad case
+        def pipe_pane_on(self, *a): pass
+        def kill_server(self): pass
+
+    monkeypatch.setattr(sr, "TmuxClient", lambda sock: _AltTmux())
+    reg = sr._Registry(base=str(tmp_base))
+    with pytest.raises(sr._AlternateScreenError):
+        reg.create(cwd=str(tmp_base), cols=80, rows=24,
+                   claude_argv=["bash", "-c", ":"], socket_override="wcb_alt")
