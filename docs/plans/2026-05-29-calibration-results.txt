@@ -1,0 +1,18 @@
+[12:01:19] tmux version: tmux 3.6a
+[12:01:19] claude: /opt/homebrew/bin/claude  version: 2.1.156 (Claude Code)
+[12:01:19] work dir: /tmp/wcbcal.A7Gvur
+[12:01:20] PRE-LAUNCH: alt=0 cmd=zsh   (expect alt=0, cmd=shell)
+[12:01:28] AFTER-LAUNCH(8s): alt=0 cmd=claude.exe
+[12:01:28] TRUST PROMPT: PRESENT despite bypassPermissions -> sending Enter to accept
+[12:01:33] composer ready at poll 1
+[12:01:33] COMPOSER-READY: alt=0 cmd=claude.exe
+[12:01:34] PROMPT SUBMITTED at 12:01:34
+[12:01:38] RENDEZVOUS FILE appeared at 12:01:38 (poll 3)
+[12:01:38] DONE visible on screen at 12:01:38
+[12:01:38] RENDEZVOUS CONTENT: {"ok":true,"probe":"wcbcal"}
+[12:01:38] RENDEZVOUS BYTES: 28
+[12:01:38] RENDEZVOUS hexdump tail: 00000000: 7763 6263 616c 227d                      wcbcal"}
+[12:01:38] DURING/AFTER TURN: alt=0 cmd=claude.exe
+[12:01:45] POST-EXIT: alt=0 cmd=zsh   (expect cmd reverts to shell if claude exited)
+[12:01:45] CLEANUP done; killed server, removed /tmp/wcbcal.A7Gvur
+=== CALIBRATION COMPLETE ===
