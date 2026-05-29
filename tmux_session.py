@@ -9,7 +9,9 @@ reaper never evicts a live session on a fork hiccup.
 NAMED_KEYS is defined here once — every other component imports it from here.
 """
 import os
+import shlex
 import signal
+import stat
 import subprocess
 
 # Liveness/authoritative phrases tmux emits to stderr when a server/session is
@@ -212,3 +214,51 @@ class TmuxClient:
             # Killing an already-dead server is a no-op, not a failure.
             if e.retryable:
                 raise
+
+    @staticmethod
+    def _safe_log_name(log_path):
+        # '%' is special in pipe-pane's command template — never let it reach
+        # the shell sink unescaped; the registry already minted a confined path.
+        return log_path.replace("%", "pct")
+
+    def pane_pipe(self, target):
+        """1 if a pipe is currently armed on the pane, else 0 (#12)."""
+        v = self._display(target, "#{pane_pipe}")
+        return int(v or "0")
+
+    def pipe_pane_on(self, target, log_path):
+        """Arm pane retention to `log_path`, symlink-safe and re-arm idempotent.
+
+        - Create the log O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW 0600 (refuses a
+          pre-existing symlink → no /etc/x clobber, no symlink sink, #8).
+        - Disable any existing pipe FIRST (query #{pane_pipe}; argumentless
+          pipe-pane) — the `cat >>` form does NOT toggle off, so re-arming
+          would otherwise leak a second cat/sh (#12).
+        - shlex.quote the full path into the `cat >>` sink command.
+        """
+        safe = self._safe_log_name(log_path)
+        try:
+            fd = os.open(
+                safe,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                0o600,
+            )
+            os.close(fd)
+        except FileExistsError:
+            # Already created by a prior arm — verify it is a regular file we
+            # own and is not a symlink, then reuse it.
+            st = os.lstat(safe)
+            if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+                raise OSError(f"refusing non-regular log path: {safe}")
+            if st.st_uid != os.getuid():
+                raise OSError(f"refusing log path not owned by euid: {safe}")
+        # Disable-first so re-arming never stacks a second sink (#12).
+        if self.pane_pipe(target) == 1:
+            self._run("pipe-pane", "-t", self._target(target))
+        sink = "cat >> " + shlex.quote(safe)
+        self._run("pipe-pane", "-o", "-t", self._target(target), sink)
+
+    def pipe_pane_off(self, target):
+        """Disable retention (argumentless pipe-pane toggles it off)."""
+        if self.pane_pipe(target) == 1:
+            self._run("pipe-pane", "-t", self._target(target))

@@ -202,3 +202,68 @@ def test_send_keys_m_enter_does_not_submit(fake_socket, tmp_path):
     after_m_enter = c.capture_pane("t")
     assert "PROBE" in after_m_enter           # still in composer, unsent
     assert "⏺ DONE" not in after_m_enter      # never submitted
+
+
+def test_pane_pipe_zero_before_arm(fake_socket, tmp_path):
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    assert c.pane_pipe("t") == 0
+
+
+def test_pipe_pane_captures_to_private_log(fake_socket, tmp_path):
+    import stat as _stat
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    log = tmp_path / "pane.log"
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    c.pipe_pane_on("t", str(log))
+    assert c.pane_pipe("t") == 1
+    c.send_text("t", "MARKERTEXT")
+    c.send_keys("t", "Enter")
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if log.exists() and "MARKERTEXT" in log.read_text(errors="replace"):
+            break
+        time.sleep(0.1)
+    assert log.exists()
+    assert "MARKERTEXT" in log.read_text(errors="replace")
+    assert _stat.S_IMODE(log.stat().st_mode) == 0o600
+
+
+def test_pipe_pane_refuses_symlink_log(fake_socket, tmp_path):
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    target = tmp_path / "real_secret"
+    target.write_text("secret")
+    link = tmp_path / "pane.log"
+    link.symlink_to(target)
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    # O_NOFOLLOW must refuse a pre-existing symlink at the log path.
+    with pytest.raises(OSError):
+        c.pipe_pane_on("t", str(link))
+    assert target.read_text() == "secret"  # untouched
+
+
+def test_pipe_pane_rearm_does_not_stack_a_second_sink(fake_socket, tmp_path):
+    # Re-arming must disable first (query #{pane_pipe}, argumentless pipe-pane)
+    # so no second cat/sh leaks (#12). The authoritative assertion is that
+    # exactly one pipe is armed after re-arm: pane_pipe() == 1.
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    log = tmp_path / "pane.log"
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    c.pipe_pane_on("t", str(log))
+    c.pipe_pane_on("t", str(log))   # re-arm
+    assert c.pane_pipe("t") == 1    # exactly one sink, never two
+
+
+def test_pipe_pane_off(fake_socket, tmp_path):
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    log = tmp_path / "pane.log"
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    c.pipe_pane_on("t", str(log))
+    assert c.pane_pipe("t") == 1
+    c.pipe_pane_off("t")
+    assert c.pane_pipe("t") == 0
