@@ -74,20 +74,17 @@ class TmuxClient:
                              retryable=True)
         return r
 
-    def new_session(self, name, cwd, cols, rows, argv):
-        """Create a detached session with claude (or the fake) as the pane cmd.
-
-        Mirrors: tmux -L <sock> -f /dev/null new-session -d -s <name>
-                 -c <cwd> -x <cols> -y <rows> -- <argv...>
-        The pane command IS `argv` (the registry injects claude_argv or the
-        fake_claude_argv fixture) — the readiness path must NOT re-type a
-        launch line. Returns the pane id (%N).
-        """
-        self._run(
+    def new_session(self, name, cwd, cols, rows, argv=None):
+        """Create a detached session. With `argv` the pane command IS argv;
+        with no argv tmux launches the default interactive shell (Model B —
+        the registry then types the claude launch line into it). Returns %N."""
+        cmd = [
             "-f", "/dev/null", "new-session", "-d", "-s", name,
             "-c", cwd, "-x", str(cols), "-y", str(rows),
-            "--", *argv,
-        )
+        ]
+        if argv:
+            cmd += ["--", *argv]
+        self._run(*cmd)
         return self.pane_id(name)
 
     def has_session(self, name):

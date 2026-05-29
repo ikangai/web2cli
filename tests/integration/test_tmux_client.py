@@ -299,3 +299,19 @@ def test_interrupt_signals_valid_pgid_then_falls_back_to_c_c(fake_socket, tmp_pa
     acted = c.interrupt("t", shell_pid=pg + 1, _tpgid_override=pg)
     assert acted is True
     assert c.has_session("t") is True
+
+
+def test_new_session_without_argv_is_interactive_shell(fake_socket, tmp_path):
+    # Model B: no argv -> default shell; the pane must run a TYPED command
+    # (this is how the registry launches claude — by typing, not as pane argv).
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    pane = c.new_session("t", cwd=str(tmp_path), cols=80, rows=24)   # no argv
+    try:
+        assert pane.startswith("%")
+        assert c.has_session("t") is True
+        c.send_text("t", "echo WCBSHELLOK_$((6*7))")
+        c.send_keys("t", "Enter")
+        screen = _wait_for(c, "t", "WCBSHELLOK_42")
+        assert "WCBSHELLOK_42" in screen      # the shell evaluated the typed cmd
+    finally:
+        c.kill_server()

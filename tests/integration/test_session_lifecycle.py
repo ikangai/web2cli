@@ -77,7 +77,7 @@ def test_create_raises_on_alternate_on(tmp_base, monkeypatch):
     class _AltTmux:
         def __init__(self, *a, **k): pass
         def socket_path(self): return None
-        def new_session(self, name, cwd, cols, rows, argv): return "%0"   # RECONCILED: argv
+        def new_session(self, name, cwd, cols, rows): return "%0"
         def has_session(self, n): return True
         def set_option(self, *a): pass
         def get_option(self, n): return None
@@ -90,3 +90,62 @@ def test_create_raises_on_alternate_on(tmp_base, monkeypatch):
     with pytest.raises(sr._AlternateScreenError):
         reg.create(cwd=str(tmp_base), cols=80, rows=24,
                    claude_argv=["bash", "-c", ":"], socket_override="wcb_alt")
+
+
+@requires_tmux
+def test_create_reaches_composer_ready(tmp_base, fake_socket, fake_claude_argv,
+                                       monkeypatch):
+    monkeypatch.setattr(paths, "base_dir", lambda: str(tmp_base))
+    reg = sr._Registry(base=str(tmp_base))
+    s = reg.create(cwd=str(tmp_base), cols=100, rows=30,
+                   claude_argv=fake_claude_argv, socket_override=fake_socket)
+    try:
+        screen = s.tmux.capture_pane(s.pane)
+        from fsm import FOOTER_IDLE
+        assert FOOTER_IDLE in screen
+        assert s.composer_seen is True
+    finally:
+        s.tmux.kill_server()
+
+
+@requires_tmux
+def test_create_answers_trust_prompt(tmp_base, fake_socket, fake_claude_argv,
+                                     monkeypatch):
+    monkeypatch.setattr(paths, "base_dir", lambda: str(tmp_base))
+    monkeypatch.setenv("WCB_FAKE_TRUST", "1")
+    reg = sr._Registry(base=str(tmp_base))
+    s = reg.create(cwd=str(tmp_base), cols=100, rows=30,
+                   claude_argv=fake_claude_argv, socket_override=fake_socket)
+    try:
+        screen = s.tmux.capture_pane(s.pane)
+        from fsm import FOOTER_IDLE, TRUST_PROMPT
+        assert FOOTER_IDLE in screen
+        assert TRUST_PROMPT not in screen
+    finally:
+        s.tmux.kill_server()
+
+
+def test_readiness_timeout_raises(tmp_base, monkeypatch):
+    monkeypatch.setattr(paths, "base_dir", lambda: str(tmp_base))
+
+    class _NeverReady:
+        def __init__(self, *a, **k): pass
+        def socket_path(self): return None
+        def new_session(self, name, cwd, cols, rows): return "%0"
+        def has_session(self, n): return True
+        def set_option(self, *a): pass
+        def get_option(self, n): return None
+        def alternate_on(self, t): return 0
+        def pipe_pane_on(self, *a): pass
+        def kill_server(self): pass
+        def capture_pane(self, t): return "still starting\n"
+        def send_keys(self, *a): pass
+        def send_text(self, *a): pass
+
+    monkeypatch.setattr(sr, "TmuxClient", lambda sock: _NeverReady())
+    monkeypatch.setattr(sr, "READY_TIMEOUT", 0.3)
+    monkeypatch.setattr(sr, "READY_POLL", 0.05)
+    reg = sr._Registry(base=str(tmp_base))
+    with pytest.raises(sr._ReadinessTimeout):
+        reg.create(cwd=str(tmp_base), cols=80, rows=24,
+                   claude_argv=["bash", "-c", ":"], socket_override="wcb_nr")

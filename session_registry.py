@@ -11,10 +11,13 @@ import threading
 import time
 
 import paths
-from fsm import classify, footer_of, strip_screen
+from fsm import FOOTER_IDLE, TRUST_PROMPT, classify, footer_of, strip_screen
 from tmux_session import TmuxClient, _TmuxError
 
 MAX_SESSIONS = 8                # design (4): max concurrent-session cap
+
+READY_TIMEOUT = 30.0
+READY_POLL = 0.25
 
 
 class _MaxSessionsReached(Exception):
@@ -22,6 +25,10 @@ class _MaxSessionsReached(Exception):
 
 
 class _AlternateScreenError(Exception):
+    pass
+
+
+class _ReadinessTimeout(Exception):
     pass
 
 
@@ -143,9 +150,7 @@ class _Registry:
         # cleared iff has-session fails.
         self._clear_stale_socket(tmux, socket)
 
-        # RECONCILED: pass claude_argv (the pane command IS argv — canonical
-        # tmux-client contract). Real argv in prod, fake_claude_argv in tests.
-        pane = tmux.new_session("t", rcwd, cols, rows, claude_argv)
+        pane = tmux.new_session("t", rcwd, cols, rows)   # shell; claude typed in _await_ready
 
         # Verify the inline-capture invariant ONCE (design (1), calibration):
         # claude renders inline (alternate_on must be 0) or capture-pane -p
@@ -173,11 +178,52 @@ class _Registry:
         tmux.set_option("t", "@wcb_created", str(int(s.created_at)))
         tmux.set_option("t", "@wcb_nonce", nonce)
 
+        try:
+            self._await_ready(s, claude_argv)
+        except Exception:
+            try:
+                tmux.kill_server()
+            except Exception:
+                pass
+            raise
+
         with self._lock:
             self._sessions[sid] = s
         s.status = "READY"
         s.ready.set()
         return s
+
+    def _await_ready(self, s, claude_argv):
+        """Type the launch argv into the shell pane, then a POSITIVE composer-
+        ready probe (never quiescence, risk #2). Detect+answer the workspace-
+        trust prompt with ['1','Enter'] (bypassPermissions does NOT suppress it)."""
+        s.tmux.send_text(s.pane, " ".join(claude_argv))
+        s.tmux.send_keys(s.pane, "Enter")
+
+        deadline = time.monotonic() + READY_TIMEOUT
+        trust_answered = False
+        while time.monotonic() < deadline:
+            screen = strip_screen(s.tmux.capture_pane(s.pane))
+            footer = footer_of(screen)
+            state, meta = classify(
+                screen, footer, env_present=False,
+                prev_timer=None, composer_seen=s.composer_seen,
+            )
+            if state == "awaiting_input" and meta.get("kind") == "trust" \
+                    and not trust_answered:
+                # '1' is free-form text (not a NAMED_KEY) -> send_text; the bare
+                # Enter that confirms the menu choice goes through send_keys.
+                s.tmux.send_text(s.pane, "1")
+                s.tmux.send_keys(s.pane, "Enter")
+                trust_answered = True
+                time.sleep(READY_POLL)
+                continue
+            if FOOTER_IDLE in screen and "❯ 1." not in screen \
+                    and TRUST_PROMPT not in screen:
+                s.composer_seen = True
+                return
+            time.sleep(READY_POLL)
+        raise _ReadinessTimeout("composer not ready within %.0fs" % READY_TIMEOUT)
 
     @staticmethod
     def _socket_path(socket):
