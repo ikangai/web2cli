@@ -262,3 +262,24 @@ class TmuxClient:
         """Disable retention (argumentless pipe-pane toggles it off)."""
         if self.pane_pipe(target) == 1:
             self._run("pipe-pane", "-t", self._target(target))
+
+    def interrupt(self, target, shell_pid, _tpgid_override=None):
+        """Guarded SIGINT to the pane's foreground process group, with a C-c
+        key fallback.
+
+        Only acts when tpgid > 0 AND tpgid != shell_pid — never SIGINT the
+        session's own shell (that would tear the session down). Attempts
+        killpg(tpgid, SIGINT); if the group is already gone or not ours, falls
+        back to a `send_keys(target, "C-c")` so a TUI-level interrupt still
+        reaches claude. Returns True if it acted, False if guarded out.
+        (`_tpgid_override` is a test seam; production callers omit it.)
+        """
+        pgid = _tpgid_override if _tpgid_override is not None else self.tpgid(target)
+        if pgid <= 0 or pgid == shell_pid:
+            return False
+        try:
+            os.killpg(pgid, signal.SIGINT)
+        except (ProcessLookupError, PermissionError):
+            # Group gone or not ours — fall back to a TUI-level C-c.
+            self.send_keys(target, "C-c")
+        return True

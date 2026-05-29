@@ -267,3 +267,35 @@ def test_pipe_pane_off(fake_socket, tmp_path):
     assert c.pane_pipe("t") == 1
     c.pipe_pane_off("t")
     assert c.pane_pipe("t") == 0
+
+
+def test_interrupt_skips_nonpositive_tpgid(fake_socket, tmp_path):
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    # tpgid <= 0 -> no signal, no fallback key, returns False without raising.
+    assert c.interrupt("t", shell_pid=999999, _tpgid_override=0) is False
+    assert c.has_session("t") is True
+
+
+def test_interrupt_guards_against_shell_pid(fake_socket, tmp_path):
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    pg = c.tpgid("t")
+    # tpgid == shell_pid -> guarded out (would SIGINT the session's own shell).
+    assert c.interrupt("t", shell_pid=pg, _tpgid_override=pg) is False
+    assert c.has_session("t") is True
+
+
+def test_interrupt_signals_valid_pgid_then_falls_back_to_c_c(fake_socket, tmp_path):
+    # A valid, distinct tpgid -> killpg(SIGINT) attempted; on a stale group it
+    # quietly falls back to a C-c key. Either way it returns True (it acted)
+    # and the session survives the interrupt.
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    pg = c.tpgid("t")
+    acted = c.interrupt("t", shell_pid=pg + 1, _tpgid_override=pg)
+    assert acted is True
+    assert c.has_session("t") is True
