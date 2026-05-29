@@ -1,0 +1,2 @@
+# Dev-only. The packaged runtime is stdlib-only and never imports pytest.
+pytest>=8,<10
