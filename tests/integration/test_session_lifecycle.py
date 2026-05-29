@@ -80,7 +80,7 @@ def test_create_raises_on_alternate_on(tmp_base, monkeypatch):
         def new_session(self, name, cwd, cols, rows): return "%0"
         def has_session(self, n): return True
         def set_option(self, *a): pass
-        def get_option(self, n): return None
+        def get_option(self, target, name): return None
         def alternate_on(self, t): return 1          # the bad case
         def pipe_pane_on(self, *a): pass
         def kill_server(self): pass
@@ -134,7 +134,7 @@ def test_readiness_timeout_raises(tmp_base, monkeypatch):
         def new_session(self, name, cwd, cols, rows): return "%0"
         def has_session(self, n): return True
         def set_option(self, *a): pass
-        def get_option(self, n): return None
+        def get_option(self, target, name): return None
         def alternate_on(self, t): return 0
         def pipe_pane_on(self, *a): pass
         def kill_server(self): pass

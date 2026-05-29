@@ -24,11 +24,11 @@ class _StubTmux:
         self.calls.append(("has_session", name))
         return True
 
-    def get_option(self, name):
+    def get_option(self, target, name):
         self.calls.append(("get_option", name))
         return self._option.get(name)
 
-    def set_option(self, name, value):
+    def set_option(self, target, name, value):
         self.calls.append(("set_option", name, value))
         self._option[name] = value
 
@@ -81,9 +81,9 @@ def test_is_busy_lock_held():
 def test_is_busy_wcb_turn_option_set():
     s = _mk_session()
     assert s.is_busy() is False
-    s.tmux.set_option("@wcb_turn", "11111111-1111-1111-1111-111111111111")
+    s.tmux.set_option("t", "@wcb_turn", "11111111-1111-1111-1111-111111111111")
     assert s.is_busy() is True
-    s.tmux.set_option("@wcb_turn", "")        # cleared
+    s.tmux.set_option("t", "@wcb_turn", "")        # cleared
     assert s.is_busy() is False
 
 
@@ -203,7 +203,7 @@ def test_hydrate_rejects_tampered_nonce_outside_base(tmp_base, monkeypatch):
     reg = sr._Registry(base=str(tmp_base))
     s = _mk_session(sid="9" * 32, nonce=None, rendezvous_dir=None,
                     tmux=_TamperTmux())
-    s.tmux.set_option("@wcb_nonce", "../../etc")
+    s.tmux.set_option("t", "@wcb_nonce", "../../etc")
     with pytest.raises(sr._RendezvousRedirect):
         reg._hydrate(s)
 

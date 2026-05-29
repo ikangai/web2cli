@@ -9,7 +9,7 @@ UUID = "12345678-1234-1234-1234-1234567890ab"
 class FakeTmux:
     def __init__(self):
         self.options = {}
-    def set_option(self, name, value):
+    def set_option(self, target, name, value):
         self.options[name] = value
 
 

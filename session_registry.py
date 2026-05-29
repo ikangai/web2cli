@@ -124,7 +124,7 @@ def stage_turn(tmux, base, session_dir_path, turn_uuid, persisted_bytes,
 
     Called by turn-protocol-fsm's _run_turn_locked, which does send-keys AFTER
     this returns (rename happens-before the prompt). Returns the staged doc
-    path. tmux is a TmuxClient (or stub) exposing set_option(name, value).
+    path. tmux is a TmuxClient (or stub) exposing set_option(target, name, value).
     If `session` is given, flips its doc_staged flag so the post-reconstruct
     409 precondition (assert_doc_staged) passes for this turn.
     """
@@ -139,7 +139,7 @@ def stage_turn(tmux, base, session_dir_path, turn_uuid, persisted_bytes,
         os.unlink(env)
     except FileNotFoundError:
         pass
-    tmux.set_option("@wcb_turn", turn_uuid)
+    tmux.set_option("t", "@wcb_turn", turn_uuid)
     if session is not None:
         mark_doc_staged(session)
     return doc
@@ -272,7 +272,7 @@ class _Session:
         """
         if self.turn_lock.locked():
             return True
-        turn = self.tmux.get_option("@wcb_turn")
+        turn = self.tmux.get_option("t", "@wcb_turn")
         if turn:
             return True
         state = self._state()
@@ -512,8 +512,8 @@ class _Registry:
         if not s.tmux.has_session("t"):
             raise _NotFound(s.sid)
         s.pane = s.tmux.pane_id("t")
-        created = s.tmux.get_option("@wcb_created")
-        nonce = s.tmux.get_option("@wcb_nonce")
+        created = s.tmux.get_option("t", "@wcb_created")
+        nonce = s.tmux.get_option("t", "@wcb_nonce")
         if created:
             try:
                 s.created_at = float(created)
