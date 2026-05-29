@@ -1,0 +1,25 @@
+martintreiber@10 wcbcal.A7Gvur % unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SSE_PORT; TERM=xterm-256color claud
+e --permission-mode bypassPermissions --model haiku
+╭─── Claude Code v2.1.156 ─────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                                        │
+│                Welcome back Martin!                │ Ask Claude to create a new app or clone a repository            │
+│                                                    │ ─────────────────────────────────────────────────────────────── │
+│                       ▐▛███▜▌                      │ What's new                                                      │
+│                      ▝▜█████▛▘                     │ Fixed an issue when using Opus 4.8 where thinking blocks were … │
+│                        ▘▘ ▝▝                       │ Opus 4.8 is here! Now defaults to high effort · /effort xhigh … │
+│       Haiku 4.5 · Claude Max ·                     │ Introducing dynamic workflows: ask Claude to create a workflow… │
+│       martin.treiber@gmail.com's Organization      │ /release-notes for more                                         │
+│             /private/tmp/wcbcal.A7Gvur             │                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+❯ Write the exact JSON {"ok":true,"probe":"wcbcal"} (no trailing newline, nothing else) to the absolute path
+  /tmp/wcbcal.A7Gvur/env.test.json using your Write tool. After the file is written, reply with only the word DONE.
+
+· Smooshing… (1s · thinking)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt
+                  tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking
