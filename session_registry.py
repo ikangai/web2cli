@@ -25,6 +25,9 @@ READY_POLL = 0.25
 
 LIST_CACHE_TTL = 1.0            # design (4): brief /list cache (sec)
 
+GRACE_SECONDS = 30.0            # reaper: min age before a session is reapable
+REAP_STRIKES = 2               # reaper: consecutive confirmed-gone passes to evict
+
 
 class _MaxSessionsReached(Exception):
     pass
@@ -825,6 +828,72 @@ class _Registry:
                 os.unlink(sock_path)
             except OSError:
                 pass
+
+    # --- reaper (orphan eviction) ------------------------------------------
+    def reap(self):
+        """One reaper pass. Evict ONLY sessions that are (a) READY (not mid-
+        reconstruct), (b) not busy, (c) past the create grace, and (d) confirmed
+        gone on REAP_STRIKES consecutive passes. Any live confirmation resets the
+        strike count. tmux I/O happens OUTSIDE the structural lock (design (1))."""
+        with self._lock:
+            candidates = list(self._sessions.items())
+        to_evict = []
+        for sid, sess in candidates:
+            if sess.status != "READY" or not sess.ready.is_set():
+                continue                                  # mid-reconstruct
+            if sess.turn_lock.locked():
+                continue                                  # busy
+            if (time.time() - sess.created_at) < GRACE_SECONDS:
+                continue                                  # within create grace
+            try:
+                alive = sess.tmux.has_session("t")
+            except Exception:
+                # An exception is NOT a confirmed-gone strike here; transient-
+                # vs-authoritative classification is refined in the reaper-thread
+                # task. Conservatively skip this pass.
+                continue
+            if alive:
+                sess._gone_strikes = 0
+                continue
+            sess._gone_strikes = getattr(sess, "_gone_strikes", 0) + 1
+            if sess._gone_strikes >= REAP_STRIKES:
+                to_evict.append((sid, sess))
+        for sid, sess in to_evict:
+            self._evict(sid, sess)
+
+    def _evict(self, sid, sess):
+        """Confined teardown of a confirmed-gone session. Re-check under the
+        structural lock that we are not racing a turn that just started — before
+        we touch the server AND again before deleting."""
+        with self._lock:
+            if self._sessions.get(sid) is not sess or sess.turn_lock.locked():
+                return
+        try:
+            sess.tmux.kill_server()
+        except Exception:
+            pass
+        self._confined_rmtree(sess)
+        with self._lock:
+            if self._sessions.get(sid) is sess and not sess.turn_lock.locked():
+                del self._sessions[sid]
+        self._list_cache = None                           # invalidate /list cache
+
+    def _confined_rmtree(self, sess):
+        """realpath-confirm the rendezvous dir is under self._base, then rmtree.
+
+        RECONCILED: paths.assert_confined RETURNS None and RAISES PathSafetyError
+        (it is neither a PermissionError nor a path-returning call — the plan's
+        `confined = assert_confined(...)` / `except PermissionError` was authoring
+        drift). Shared confined-rm for the reaper; delete keeps its own
+        raise-on-unconfined contract (a caller-facing security signal)."""
+        rdir = getattr(sess, "rendezvous_dir", None)
+        if not rdir:
+            return
+        try:
+            paths.assert_confined(rdir, self._base)
+        except paths.PathSafetyError:
+            return                                        # refuse unconfined rm
+        shutil.rmtree(rdir, ignore_errors=True)
 
 
 REGISTRY = _Registry()

@@ -353,3 +353,94 @@ def test_delete_refuses_unconfined_dir(tmp_base, monkeypatch):
         reg.delete("4" * 32, "k" * 64)
     import os as _os
     assert _os.path.isdir("/etc")          # /etc must NOT have been rm'd
+
+
+# --- Task 44: reaper (orphan eviction, 2x-confirm + grace) -------------------
+# Reaper-specific helpers (distinct names so they do NOT shadow the file's
+# existing _StubTmux / _mk_session, which other tests above depend on).
+
+class _ReapTmux:
+    """Controllable liveness + records kill_server (reaper-only stub)."""
+    def __init__(self, alive=True):
+        self._alive = alive
+        self.killed = False
+        self.has_calls = 0
+
+    def has_session(self, name):
+        self.has_calls += 1
+        return self._alive
+
+    def kill_server(self):
+        self.killed = True
+
+    def get_option(self, target, name):
+        return None
+
+    def pipe_pane_off(self, target):
+        pass
+
+
+def _mk_reap_session(reg, sid, *, alive=True, created_ago=999.0):
+    sess = sr._Session.__new__(sr._Session)
+    sess.sid = sid
+    sess.cap = "c" * 64
+    sess.nonce = "n" * 16
+    sess.pane = "t:0.0"
+    sess.tmux = _ReapTmux(alive=alive)
+    sess.turn_lock = threading.Lock()
+    sess.ready = threading.Event(); sess.ready.set()
+    sess.status = "READY"
+    sess.created_at = time.time() - created_ago
+    sess.rendezvous_dir = "/nonexistent/wcb_%s_x" % sid
+    sess.log_path = sess.rendezvous_dir + "/pane.log"
+    sess.composer_seen = True
+    sess._gone_strikes = 0
+    sess.log_offset_base = 0
+    sess.shell_pid = 0
+    reg._sessions[sid] = sess
+    return sess
+
+
+def test_reap_requires_two_confirmed_failures(tmp_base):
+    reg = sr._Registry(base=str(tmp_base))
+    s = _mk_reap_session(reg, "a" * 32, alive=False)
+    reg.reap()                       # first pass: one strike, no kill
+    assert s.tmux.killed is False
+    assert "a" * 32 in reg._sessions
+    reg.reap()                       # second confirmed failure -> evict
+    assert ("a" * 32) not in reg._sessions
+
+
+def test_reap_never_touches_busy_session(tmp_base):
+    reg = sr._Registry(base=str(tmp_base))
+    s = _mk_reap_session(reg, "b" * 32, alive=False)
+    s.turn_lock.acquire()            # busy
+    try:
+        reg.reap(); reg.reap()
+        assert ("b" * 32) in reg._sessions
+        assert s.tmux.killed is False
+    finally:
+        s.turn_lock.release()
+
+
+def test_reap_respects_grace_on_young_session(tmp_base):
+    reg = sr._Registry(base=str(tmp_base))
+    s = _mk_reap_session(reg, "c" * 32, alive=False, created_ago=1.0)  # < grace
+    reg.reap(); reg.reap()
+    assert ("c" * 32) in reg._sessions
+
+
+def test_reap_keeps_live_session(tmp_base):
+    reg = sr._Registry(base=str(tmp_base))
+    s = _mk_reap_session(reg, "d" * 32, alive=True)
+    reg.reap(); reg.reap()
+    assert ("d" * 32) in reg._sessions
+    assert s._gone_strikes == 0
+
+
+def test_reap_skips_reconstructing(tmp_base):
+    reg = sr._Registry(base=str(tmp_base))
+    s = _mk_reap_session(reg, "e" * 32, alive=False)
+    s.status = "RECONSTRUCTING"; s.ready.clear()
+    reg.reap(); reg.reap()
+    assert ("e" * 32) in reg._sessions
