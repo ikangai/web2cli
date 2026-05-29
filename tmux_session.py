@@ -170,6 +170,35 @@ class TmuxClient:
         out = (r.stdout or "").strip()
         return out if out != "" else None
 
+    def send_keys(self, target, *keys):
+        """Send named keys ONLY (NAMED_KEYS allowlist). Reject everything else
+        so a caller can never smuggle a tmux key-name or shell string here —
+        free-form text must go through send_text (#9/#10)."""
+        for k in keys:
+            if k not in NAMED_KEYS:
+                raise ValueError(f"key not in NAMED_KEYS allowlist: {k!r}")
+        self._run("send-keys", "-t", self._target(target), *keys)
+
+    def send_text(self, target, text):
+        """Type `text` literally: `send-keys -l -t <pane> -- <text>`.
+        The `-l` flag + `--` guard mean tmux interprets no key names and the
+        shell evaluates nothing (#9)."""
+        self._run("send-keys", "-l", "-t", self._target(target), "--", text)
+
+    def send_prompt(self, target, text):
+        """Type a (possibly multi-line) prompt the way claude's composer wants:
+        each non-empty line via `send-keys -l … --`, an `M-Enter` between lines
+        (composer newline, NOT submit), and one final bare `Enter` to submit.
+        Calibration-pinned for claude v2.1.156."""
+        lines = text.split("\n")
+        last = len(lines) - 1
+        for i, line in enumerate(lines):
+            if line:
+                self.send_text(target, line)
+            if i < last:
+                self.send_keys(target, "M-Enter")
+        self.send_keys(target, "Enter")
+
     def socket_path(self):
         """Absolute path of the -L socket (for defensive socket-clear / unlink,
         risk #11). Server must be up."""

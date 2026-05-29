@@ -135,3 +135,70 @@ def test_missing_option_is_default_not_dead(fake_socket, tmp_path):
     _wait_for(c, "t", IDLE)
     # An unset @wcb_* option is a recoverable default (None), NOT a death signal.
     assert c.get_option("t", "@wcb_never_set") is None
+
+
+def test_send_keys_rejects_unknown_named_key(fake_socket, tmp_path):
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    # Anything outside NAMED_KEYS must be rejected before touching tmux argv.
+    with pytest.raises(ValueError):
+        c.send_keys("t", "F1")
+    with pytest.raises(ValueError):
+        c.send_keys("t", "rm -rf /")
+
+
+def test_send_text_types_literally_no_shell_eval(fake_socket, tmp_path):
+    # send_text uses `-l ... --` so metacharacters are typed, never evaluated.
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    payload = "EXIT$(touch /tmp/wcb_pwned_$$)"  # if eval'd, file would appear
+    c.send_text("t", payload)
+    time.sleep(0.3)
+    assert not os.path.exists(f"/tmp/wcb_pwned_{os.getpid()}")
+    screen = c.capture_pane("t")
+    assert "$(touch" in screen  # the literal characters reached the composer
+
+
+def test_send_prompt_two_lines_unsent_via_m_enter(fake_socket, tmp_path):
+    # M-Enter inserts a newline WITHOUT submitting (calibration-pinned). The
+    # fake only treats a bare Enter as submit, so a 2-line prompt stays unsent
+    # at the M-Enter boundary and is submitted exactly once at the end.
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    c.send_prompt("t", "lineONE\nlineTWO")
+    time.sleep(0.3)
+    screen = c.capture_pane("t")
+    assert "lineONE" in screen
+    assert "lineTWO" in screen
+
+
+def test_send_prompt_single_line_submits_fake_write(fake_socket, tmp_path):
+    # A single-line fake WRITE prompt submits with one bare Enter -> the fake
+    # writes the rendezvous file. (Fake protocol only; the real prompt is
+    # build_turn_prompt in rendezvous-docsync.)
+    import json
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    env_path = tmp_path / "env.json"
+    uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    c.send_prompt("t", f"WRITE {env_path} {uuid}")
+    _wait_for(c, "t", "⏺ DONE")
+    obj = json.loads(env_path.read_text())
+    assert obj["turn_uuid"] == uuid
+
+
+def test_send_keys_m_enter_does_not_submit(fake_socket, tmp_path):
+    # Distinguish M-Enter (no submit) from Enter (submit) via a capture.
+    c = TmuxClient(socket=fake_socket, tmux_bin=TMUX)
+    c.new_session("t", cwd=str(tmp_path), cols=80, rows=24, argv=FAKE_ARGV)
+    _wait_for(c, "t", IDLE)
+    c.send_text("t", "PROBE")
+    c.send_keys("t", "M-Enter")
+    time.sleep(0.2)
+    after_m_enter = c.capture_pane("t")
+    assert "PROBE" in after_m_enter           # still in composer, unsent
+    assert "⏺ DONE" not in after_m_enter      # never submitted
