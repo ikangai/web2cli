@@ -166,6 +166,13 @@ def build_turn_prompt(instruction, doc_path_abs, env_path_abs, turn_uuid) -> str
     is a fixture only; production uses THIS prompt.
     """
     part = env_path_abs + ".part"
+    # Canonicalize the caller's instruction to \n (no literal \r leaks into the
+    # prompt) and indent EVERY line so a multi-line instruction stays an indented
+    # block under step 3. This also closes a protocol-forgery edge: a
+    # continuation line can never reach column 0, so it can never masquerade as
+    # the column-0 `WRITE <env> <uuid>` machine handshake (review finding #11).
+    instruction = str(instruction).replace("\r\n", "\n").replace("\r", "\n")
+    instruction = instruction.replace("\n", "\n   ")
     return (
         "You are editing an HTML document through a file rendezvous.\n\n"
         f"1. Read the CURRENT document now from this exact absolute path "
@@ -527,20 +534,24 @@ class _Registry:
                          on_event):
         target = sess.pane
         base = self._base
-        # rendezvous-docsync owns staging: stale-env sweep + gen-sentinel inject
-        # + atomic O_NOFOLLOW doc write (risks #3/#4/#7/#9). stage_turn also sets
-        # @wcb_turn (durable busy flag) and flips doc_staged for the post-
-        # reconstruct 409 precondition. The caller's doc may arrive CRLF;
-        # canonicalize to \n here (the producer's job, matching canonLF on the
-        # rwa side) before staging — put_doc/inject_gen_sentinel REJECT any \r.
+        # The caller's doc may arrive CRLF; canonicalize to \n here (the
+        # producer's job, matching canonLF on the rwa side) before staging —
+        # put_doc/inject_gen_sentinel REJECT any \r. This is pure and cannot set
+        # @wcb_turn, so it stays outside the try below.
         doc_bytes = doc.encode("utf-8") if isinstance(doc, str) else bytes(doc)
         doc_bytes = doc_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-        doc_path = stage_turn(sess.tmux, base, sess.rendezvous_dir, turn_uuid,
-                              doc_bytes, session=sess)
-        env_path = paths.env_path(sess.rendezvous_dir, turn_uuid)
 
-        send_time = time.time()        # set BEFORE send so a fresh file mtime > it
+        # stage_turn SETS @wcb_turn (the durable busy flag). Keep it inside the
+        # try so the finally clears @wcb_turn on EVERY path, even if staging or
+        # prompt construction throws after the flag was set (single-scope
+        # set/clear — review finding #2). rendezvous-docsync owns the staging:
+        # stale-env sweep + gen-sentinel inject + atomic O_NOFOLLOW doc write +
+        # doc_staged flip for the post-reconstruct 409 precondition.
         try:
+            doc_path = stage_turn(sess.tmux, base, sess.rendezvous_dir,
+                                  turn_uuid, doc_bytes, session=sess)
+            env_path = paths.env_path(sess.rendezvous_dir, turn_uuid)
+            send_time = time.time()    # set BEFORE send so a fresh file mtime > it
             if not instruction:
                 # No instruction dispatched -> no work, hence no thinking-gap
                 # hazard: the turn is a trivial no-op. stage_turn already swept
@@ -604,12 +615,23 @@ class _Registry:
                 return self._turn_result("idle", "idle", sess,
                                          envelope_bytes=raw)
             except paths.EnvelopeNotWritten:
-                pass
-            except (paths.EnvelopeIncomplete, paths.EnvelopeRejected):
-                # A still-writing or malformed/mis-targeted file is NOT a valid
-                # completion; keep polling. A persistently-bad file -> timeout
-                # -> idle_no_envelope, never a bad accept.
-                pass
+                pass                       # no fresh file yet; await paced the slice
+            except paths.EnvelopeRejected as e:
+                # await_envelope only reads AFTER the file is size+mtime-stable,
+                # so a rejection here is a COMPLETE-but-invalid envelope (wrong
+                # gen / turn_uuid / shape / group-writable mode) — deterministic;
+                # re-polling never fixes it. Surface a distinct TERMINAL outcome
+                # (fail fast, diagnosable, never a bad accept) instead of masking
+                # it as idle_no_envelope and burning the whole budget while
+                # busy-spinning capture_pane (review findings #1/#6/#9).
+                return self._turn_result("envelope_rejected", "idle", sess,
+                                         envelope_bytes=None, detail=str(e))
+            except paths.EnvelopeIncomplete:
+                # Stable size but not-yet-parseable JSON: transient per the
+                # read-back contract, so keep polling — but await_envelope
+                # returns early here, so pace explicitly to avoid busy-spinning
+                # the screen capture (review finding #6).
+                time.sleep(self._AWAIT_POLL_MS / 1000.0)
 
             # 2) screen read — only for awaiting_input / dead.
             stripped = strip_screen(sess.tmux.capture_pane(target))
