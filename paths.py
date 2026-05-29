@@ -15,6 +15,7 @@ import os
 import re
 import secrets
 import stat
+import sys
 import uuid
 
 # session_id = uuid4().hex — 32 lowercase hex. Path-bound, so strictly anchored.
@@ -25,7 +26,7 @@ TURN_UUID_RE = re.compile(
 )
 
 
-class PathSafetyError(Exception):
+class PathSafetyError(RuntimeError):
     """A base dir failed verification, or a path escaped its confinement."""
 
 
@@ -68,12 +69,17 @@ def validate_turn_uuid(turn_uuid):
 # --- base dir + confinement -------------------------------------------------
 
 def base_dir():
-    """Default rendezvous base dir, under $HOME — NOT /tmp (design §3: /tmp is
-    hijackable). Callers may override via the registry's `base` param."""
-    return os.path.join(
-        os.path.expanduser("~"),
-        "Library", "Application Support", "WebCLIBridge", "rendezvous",
-    )
+    """Rendezvous base under $HOME, never /tmp. Created 0700 if missing."""
+    if sys.platform == "darwin":
+        root = os.path.join(
+            os.path.expanduser("~"),
+            "Library", "Application Support", "WebCLIBridge", "rendezvous",
+        )
+    else:
+        root = os.path.join(os.path.expanduser("~"), ".web_cli_bridge", "rendezvous")
+    os.makedirs(root, mode=0o700, exist_ok=True)
+    os.chmod(root, 0o700)  # makedirs honours umask; chmod defeats it
+    return root
 
 
 def verify_base_dir(base):
@@ -81,9 +87,12 @@ def verify_base_dir(base):
 
     lstat (NOT stat, so a symlink-to-dir is rejected): must be a real
     directory, not a symlink, owned by the effective uid, mode exactly 0700.
-    A missing base raises FileNotFoundError (the caller/bootstrap creates it).
+    A missing base raises PathSafetyError (the caller/bootstrap creates it).
     """
-    st = os.lstat(base)
+    try:
+        st = os.lstat(base)
+    except FileNotFoundError as e:
+        raise PathSafetyError("rendezvous base missing: %s" % base) from e
     if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
         raise PathSafetyError("base dir is not a real directory: %s" % base)
     if st.st_uid != os.geteuid():
