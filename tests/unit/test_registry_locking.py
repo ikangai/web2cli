@@ -205,3 +205,102 @@ def test_hydrate_rejects_tampered_nonce_outside_base(tmp_base, monkeypatch):
     s.tmux.set_option("@wcb_nonce", "../../etc")
     with pytest.raises(sr._RendezvousRedirect):
         reg._hydrate(s)
+
+
+def test_list_sessions_reports_busy_when_lock_held():
+    reg = sr._Registry()
+    s = _mk_session(sid="f" * 32)
+    s.status = "READY"
+    s._classify_state = lambda: "idle"
+    with reg._lock:
+        reg._sessions[s.sid] = s
+
+    rows = reg.list_sessions()
+    assert len(rows) == 1
+    assert rows[0]["session_id"] == "f" * 32
+    assert rows[0]["state"] in ("idle", "ready")
+    assert rows[0]["alive"] is True
+
+    reg._list_cache = None        # bypass the brief cache for this assertion
+    s.turn_lock.acquire()
+    try:
+        rows = reg.list_sessions()
+        assert rows[0]["state"] == "busy"      # turn lock held -> busy
+    finally:
+        s.turn_lock.release()
+
+
+def test_list_sessions_never_holds_structural_lock_during_tmux():
+    reg = sr._Registry()
+    observed = []
+
+    class _Probe(_StubTmux):
+        def has_session(self, name):
+            observed.append(reg._lock.locked())
+            return True
+        def capture_pane(self, target):
+            observed.append(reg._lock.locked())
+            return ""
+
+    s = _mk_session(sid="0" * 32, tmux=_Probe())
+    s.status = "READY"
+    with reg._lock:
+        reg._sessions[s.sid] = s
+    reg.list_sessions()
+    assert observed and all(held is False for held in observed)
+
+
+def test_list_sessions_marks_dead_alive_false_without_evicting():
+    reg = sr._Registry()
+
+    class _Dead(_StubTmux):
+        def has_session(self, name):
+            return False
+
+    s = _mk_session(sid="1" * 32, tmux=_Dead())
+    s.status = "READY"
+    with reg._lock:
+        reg._sessions[s.sid] = s
+    rows = reg.list_sessions()
+    assert rows[0]["alive"] is False
+    assert s.sid in reg._sessions          # list NEVER evicts
+
+
+def test_list_sessions_log_bytes_includes_offset_base(tmp_base, monkeypatch):
+    """CRITIQUE-FIX: log_bytes accounts for log_offset_base (rotation)."""
+    monkeypatch.setattr(sr.paths, "base_dir", lambda: str(tmp_base))
+    log = tmp_base / "log"
+    log.write_bytes(b"x" * 100)
+    reg = sr._Registry(base=str(tmp_base))
+    s = _mk_session(sid="2" * 32, log_path=str(log))
+    s.status = "READY"
+    s._classify_state = lambda: "idle"
+    s.log_offset_base = 40                 # 40 bytes rotated away earlier
+    with reg._lock:
+        reg._sessions[s.sid] = s
+    rows = reg.list_sessions()
+    assert rows[0]["log_bytes"] == 140     # 100 on disk + 40 base
+
+
+def test_list_sessions_brief_cache(monkeypatch):
+    """CRITIQUE-FIX design (4): /list cached briefly to avoid O(N) fan-out."""
+    reg = sr._Registry()
+    probes = []
+
+    class _Counting(_StubTmux):
+        def has_session(self, name):
+            probes.append(1)
+            return True
+
+    s = _mk_session(sid="3" * 32, tmux=_Counting())
+    s.status = "READY"
+    s._classify_state = lambda: "idle"
+    with reg._lock:
+        reg._sessions[s.sid] = s
+    monkeypatch.setattr(sr, "LIST_CACHE_TTL", 60.0)
+    reg.list_sessions()
+    reg.list_sessions()                    # served from cache, no new probe
+    assert sum(probes) == 1
+    monkeypatch.setattr(sr, "LIST_CACHE_TTL", 0.0)   # expire immediately
+    reg.list_sessions()
+    assert sum(probes) == 2

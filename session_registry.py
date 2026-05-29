@@ -20,6 +20,8 @@ MAX_SESSIONS = 8                # design (4): max concurrent-session cap
 READY_TIMEOUT = 30.0
 READY_POLL = 0.25
 
+LIST_CACHE_TTL = 1.0            # design (4): brief /list cache (sec)
+
 
 class _MaxSessionsReached(Exception):
     pass
@@ -99,6 +101,7 @@ class _Registry:
         self._sessions = {}                      # sid -> _Session
         # CRITIQUE-FIX: pinned constructor — explicit base or paths.base_dir().
         self._base = base if base is not None else paths.base_dir()
+        self._list_cache = None                 # (built_at, rows)
 
     def _snapshot(self):
         """Copy the dict under the structural lock; release before any I/O."""
@@ -115,6 +118,49 @@ class _Registry:
             except Exception:
                 pass
         return alive
+
+    def list_sessions(self):
+        """Gather tmux facts first (lock FREE), then under the structural lock
+        apply only additive reads. state=busy whenever the turn lock is held;
+        NEVER evict here (design (1)). Result cached briefly (design (4))."""
+        cache = self._list_cache
+        if cache is not None and (time.monotonic() - cache[0]) < LIST_CACHE_TTL:
+            return cache[1]
+
+        sessions = self._snapshot()             # copy under lock, release
+        rows = []
+        for s in sessions:
+            # tmux I/O happens with the structural lock FREE.
+            try:
+                alive = s.tmux.has_session("t")
+            except Exception:
+                alive = False
+
+            if s.turn_lock.locked():
+                state = "busy"
+            elif s.status == "RECONSTRUCTING":
+                state = "reconstructing"
+            elif s.is_busy():                   # @wcb_turn OR FSM != idle
+                state = "busy"
+            else:
+                state = "idle"
+
+            try:
+                on_disk = os.path.getsize(s.log_path) if s.log_path else 0
+            except OSError:
+                on_disk = 0
+            # CRITIQUE-FIX: report bytes in the global (rotation-adjusted) space.
+            log_bytes = on_disk + s.log_offset_base
+
+            rows.append({
+                "session_id": s.sid,
+                "state": state,
+                "created_at": s.created_at,
+                "log_bytes": log_bytes,
+                "alive": bool(alive),
+            })
+        self._list_cache = (time.monotonic(), rows)
+        return rows
 
     def create(self, *, cwd, cols, rows, claude_argv, socket_override=None):
         # 0) confine cwd: must be an existing dir, realpath-resolved.
