@@ -5,11 +5,20 @@ Two-level locking: a module-level structural Lock guards dict mutation ONLY
 (never wraps tmux I/O or a stream loop); a per-_Session turn Lock serializes
 turns. See design (1) "Registry & locking".
 """
+import os
+import stat
 import threading
 import time
 
 import paths
 from fsm import classify, footer_of, strip_screen
+from tmux_session import TmuxClient, _TmuxError
+
+MAX_SESSIONS = 8                # design (4): max concurrent-session cap
+
+
+class _MaxSessionsReached(Exception):
+    pass
 
 
 class _Session:
@@ -86,6 +95,104 @@ class _Registry:
             except Exception:
                 pass
         return alive
+
+    def create(self, *, cwd, cols, rows, claude_argv, socket_override=None):
+        # 0) confine cwd: must be an existing dir, realpath-resolved.
+        if not isinstance(cwd, str) or not cwd:
+            raise ValueError("cwd must be a non-empty string")
+        rcwd = os.path.realpath(cwd)
+        if not os.path.isdir(rcwd):
+            raise NotADirectoryError(cwd)
+
+        # cap concurrent sessions (design (4) -> 429)
+        with self._lock:
+            if len(self._sessions) >= MAX_SESSIONS:
+                raise _MaxSessionsReached(
+                    f"max {MAX_SESSIONS} concurrent sessions")
+
+        base = self._base
+        paths.verify_base_dir(base)        # S_ISDIR & !LNK & uid==euid & 0700
+
+        sid = paths.mint_session_id()
+        cap = paths.mint_cap()
+        nonce = paths.mint_nonce()
+        socket = socket_override or ("wcb_" + sid)
+        rdir = paths.session_dir(base, sid, nonce)
+        paths.assert_confined(rdir, base)
+
+        # 0700 dir + explicit chmod (defeat umask) + 0600 cap file.
+        os.makedirs(rdir, mode=0o700, exist_ok=False)
+        os.chmod(rdir, 0o700)
+        cap_path = os.path.join(rdir, "cap")
+        fd = os.open(cap_path,
+                     os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(fd, cap.encode("ascii"))
+        finally:
+            os.close(fd)
+
+        log_path = os.path.join(rdir, "log")
+        tmux = TmuxClient(socket)
+
+        # Defensive socket-path clear (design (1), risk #11): a leftover
+        # NON-socket file permanently bricks new-session; a stale socket is
+        # cleared iff has-session fails.
+        self._clear_stale_socket(tmux, socket)
+
+        # RECONCILED: pass claude_argv (the pane command IS argv — canonical
+        # tmux-client contract). Real argv in prod, fake_claude_argv in tests.
+        pane = tmux.new_session("t", rcwd, cols, rows, claude_argv)
+
+        s = _Session(
+            sid=sid, cap=cap, nonce=nonce, socket=socket, pane=pane,
+            cwd=rcwd, rendezvous_dir=rdir, log_path=log_path,
+            created_at=time.time(), tmux=tmux,
+        )
+        # persist durable options (survive a bridge restart, no Python state).
+        # RECONCILED: TmuxClient.set_option is (target, name, value) — pass the
+        # session target "t" (the plan's 2-arg form was authoring drift).
+        tmux.set_option("t", "@wcb_created", str(int(s.created_at)))
+        tmux.set_option("t", "@wcb_nonce", nonce)
+
+        with self._lock:
+            self._sessions[sid] = s
+        s.status = "READY"
+        s.ready.set()
+        return s
+
+    @staticmethod
+    def _socket_path(socket):
+        """Canonical `-L <socket>` path WITHOUT a live server.
+
+        RECONCILED: TmuxClient.socket_path() asks a *running* server via
+        display-message, but the defensive clear must run BEFORE the server
+        exists (chicken-and-egg) — so derive the same path tmux itself uses:
+        $TMUX_TMPDIR (or /tmp) / tmux-<uid> / <socket>. This is the exact
+        layout the test teardown unlinks, so no leak slips through.
+        """
+        sock_dir = os.environ.get("TMUX_TMPDIR") or "/tmp"
+        return os.path.join(sock_dir, "tmux-%d" % os.getuid(), socket)
+
+    def _clear_stale_socket(self, tmux, socket):
+        """Unlink a leftover non-socket file; unlink a dead socket (risk #11)."""
+        sock_path = self._socket_path(socket)
+        if not sock_path:
+            return
+        try:
+            st = os.lstat(sock_path)
+        except FileNotFoundError:
+            return
+        if not stat.S_ISSOCK(st.st_mode):
+            os.unlink(sock_path)            # non-socket file -> unconditional clear
+            return
+        try:
+            if not tmux.has_session("t"):
+                os.unlink(sock_path)
+        except _TmuxError:
+            try:
+                os.unlink(sock_path)
+            except OSError:
+                pass
 
 
 REGISTRY = _Registry()
