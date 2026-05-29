@@ -228,10 +228,18 @@ def safe_open_nofollow(path, flags) -> int:
             raise EnvelopeRejected(f"refused open: {path} ({errno.errorcode.get(e.errno)})")
         raise
     st = os.fstat(fd)
+    # Mode mask is 0o022 (group/other WRITE), NOT 0o077: the envelope is written
+    # by claude's Write tool, which honours the process umask and so normally
+    # lands at 0o644 (rw-r--r--). The file lives inside a 0700, euid-owned,
+    # realpath-confined session dir, so no other user can even traverse to it —
+    # its own read bits are moot. The one mode-based vector that still matters as
+    # defence-in-depth is group/other WRITABILITY (an injected/tampered
+    # envelope), so we reject only that. Requiring 0o600 here would reject every
+    # envelope real claude ever writes.
     if not (stat.S_ISREG(st.st_mode)
             and st.st_uid == os.getuid()
             and st.st_nlink == 1
-            and not (stat.S_IMODE(st.st_mode) & 0o077)):
+            and not (stat.S_IMODE(st.st_mode) & 0o022)):
         os.close(fd)
         raise EnvelopeRejected(
             f"fstat guard failed: reg={stat.S_ISREG(st.st_mode)} "

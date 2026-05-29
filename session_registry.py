@@ -12,6 +12,7 @@ import shutil
 import stat
 import threading
 import time
+import uuid
 
 import paths
 from fsm import FOOTER_IDLE, TRUST_PROMPT, classify, footer_of, strip_screen
@@ -47,6 +48,16 @@ class _RendezvousRedirect(Exception):
 
 class _SessionBusy(Exception):
     pass
+
+
+class SessionBusy(Exception):
+    """A turn was requested while this session's turn lock is held -> 409.
+
+    Public (the HTTP dispatcher maps it to 409 busy). Distinct from the
+    internal _SessionBusy raised by delete() when a teardown races a turn;
+    both mean "the session is mid-turn", but the turn path is the caller-
+    facing one the dispatcher keys on.
+    """
 
 
 def _ensure_session_dir(base, sid, nonce):
@@ -180,6 +191,16 @@ def build_turn_prompt(instruction, doc_path_abs, env_path_abs, turn_uuid) -> str
         "   The rename is the completion signal; do not write the final path "
         "directly.\n\n"
         "7. After the rename succeeds, reply with only the word DONE.\n"
+        "\n"
+        # Machine handshake on the FINAL line: name the env file + turn_uuid so
+        # an automated driver can locate the rendezvous target without parsing
+        # prose. It MUST stay last and carry NO trailing newline so send_prompt
+        # delivers it as one clean line (every earlier line gets an M-Enter
+        # composer-newline; only the last is terminated by the bare submit
+        # Enter). The canonical test fake (tests/fake_claude.sh) keys on this
+        # `WRITE <env> <uuid>` line; real claude reads it as a terse restatement
+        # of the path it was already told to write in step 6.
+        f"WRITE {env_path_abs} {turn_uuid}"
     )
 
 
@@ -463,6 +484,177 @@ class _Registry:
                 return
             time.sleep(READY_POLL)
         raise _ReadinessTimeout("composer not ready within %.0fs" % READY_TIMEOUT)
+
+    # --- turn protocol (held-lock) -----------------------------------------
+    # Completion is the FILE EDGE (rendezvous-docsync await_envelope), never
+    # screen quiescence — claude's TUI has multi-second thinking gaps that look
+    # idle (design §4). The screen is read only for awaiting_input / dead.
+    _TURN_ACQUIRE_TIMEOUT = 2.0    # bounded acquire => observable 409 (not queue)
+    _POLL_SLICE_S = 0.4            # per-iteration file-edge budget (>= stable_ms)
+    _AWAIT_STABLE_MS = 150         # env size+mtime must hold this long before read
+    _AWAIT_POLL_MS = 50
+    _DEAD_QUIESCENT_S = 1.0        # a dead candidate must persist+corroborate
+
+    def mint_turn_uuid(self):
+        """Bridge-minted per-turn uuid (risk #7) — never caller-supplied."""
+        return str(uuid.uuid4())
+
+    def run_turn(self, sess, **kw):
+        """Acquire the bounded per-session turn lock, then delegate.
+
+        The BOUNDED acquire is what makes a concurrent turn observably 409: if
+        the lock is already held we give up after _TURN_ACQUIRE_TIMEOUT and
+        raise SessionBusy rather than queueing behind the in-flight turn.
+        Released in finally so a turn ending never leaves the session wedged
+        (and never kills it)."""
+        if not sess.turn_lock.acquire(timeout=self._TURN_ACQUIRE_TIMEOUT):
+            raise SessionBusy(sess.sid)
+        try:
+            return self.run_turn_locked(sess, **kw)
+        finally:
+            sess.turn_lock.release()
+
+    def run_turn_locked(self, sess, *, instruction, doc, turn_uuid, timeout,
+                        on_event=None):
+        """Assumes the turn lock is ALREADY held. The HTTP layer (cleanup-
+        security) acquires it BEFORE send_response(200) so a second turn sees
+        409 while this one streams, then reaches this method directly."""
+        return self._run_turn_locked(
+            sess, instruction=instruction, doc=doc, turn_uuid=turn_uuid,
+            timeout=timeout, on_event=on_event)
+
+    def _run_turn_locked(self, sess, *, instruction, doc, turn_uuid, timeout,
+                         on_event):
+        target = sess.pane
+        base = self._base
+        # rendezvous-docsync owns staging: stale-env sweep + gen-sentinel inject
+        # + atomic O_NOFOLLOW doc write (risks #3/#4/#7/#9). stage_turn also sets
+        # @wcb_turn (durable busy flag) and flips doc_staged for the post-
+        # reconstruct 409 precondition. The caller's doc may arrive CRLF;
+        # canonicalize to \n here (the producer's job, matching canonLF on the
+        # rwa side) before staging — put_doc/inject_gen_sentinel REJECT any \r.
+        doc_bytes = doc.encode("utf-8") if isinstance(doc, str) else bytes(doc)
+        doc_bytes = doc_bytes.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        doc_path = stage_turn(sess.tmux, base, sess.rendezvous_dir, turn_uuid,
+                              doc_bytes, session=sess)
+        env_path = paths.env_path(sess.rendezvous_dir, turn_uuid)
+
+        send_time = time.time()        # set BEFORE send so a fresh file mtime > it
+        try:
+            if not instruction:
+                # No instruction dispatched -> no work, hence no thinking-gap
+                # hazard: the turn is a trivial no-op. stage_turn already swept
+                # any stale env, so there is nothing fresh to read. Return at
+                # once rather than block the whole timeout.
+                return self._turn_result("idle_no_envelope", "idle_no_envelope",
+                                         sess, envelope_bytes=None)
+            prompt = build_turn_prompt(instruction, doc_path, env_path,
+                                       turn_uuid)
+            sess.tmux.send_prompt(target, prompt)
+            return self._await_completion(
+                sess, env_path=env_path, turn_uuid=turn_uuid,
+                send_time=send_time, timeout=timeout, target=target,
+                on_event=on_event)
+        finally:
+            # Clear the durable busy flag. target-first signature (the option-
+            # drift fix): TmuxClient.set_option is (target, name, value).
+            try:
+                sess.tmux.set_option("t", "@wcb_turn", "")
+            except Exception:
+                pass
+
+    def _turn_result(self, reason, state, sess, *, envelope_bytes, **extra):
+        """Uniform turn outcome dict. `alive` defaults to a has-session probe;
+        callers override it via extra (e.g. dead => alive=False)."""
+        try:
+            alive = sess.tmux.has_session("t")
+        except Exception:
+            alive = False
+        r = {"reason": reason, "state": state, "log_offset": 0,
+             "alive": alive, "envelope_bytes": envelope_bytes}
+        r.update(extra)
+        return r
+
+    def _await_completion(self, sess, *, env_path, turn_uuid, send_time,
+                          timeout, target, on_event):
+        """Interleave the authoritative FILE edge with a screen read.
+
+        Each iteration first asks rendezvous-docsync's await_envelope for a
+        fresh (.part->renamed, mtime>send_time, size+mtime-stable) envelope and,
+        on success, returns it byte-exact + gen-sentinel-checked (await_envelope
+        -> read_envelope_bytes -> verify_envelope_sentinel, risk #4). Only
+        BETWEEN those bounded polls do we read the screen, and only to surface
+        awaiting_input or a corroborated dead pane. If the budget elapses with
+        no fresh file we report idle_no_envelope — we NEVER read a stale file
+        and NEVER treat an idle-looking screen as completion (design §4)."""
+        deadline = time.monotonic() + timeout
+        state = "thinking"
+        prev_timer = None
+        dead_since = None
+        while time.monotonic() < deadline:
+            # 1) authoritative file edge, bounded so we still read the screen.
+            slice_deadline = min(deadline,
+                                 time.monotonic() + self._POLL_SLICE_S)
+            try:
+                raw = await_envelope(
+                    sess.rendezvous_dir, self._base, turn_uuid, send_time,
+                    deadline=slice_deadline,
+                    stable_ms=self._AWAIT_STABLE_MS,
+                    poll_ms=self._AWAIT_POLL_MS)
+                return self._turn_result("idle", "idle", sess,
+                                         envelope_bytes=raw)
+            except paths.EnvelopeNotWritten:
+                pass
+            except (paths.EnvelopeIncomplete, paths.EnvelopeRejected):
+                # A still-writing or malformed/mis-targeted file is NOT a valid
+                # completion; keep polling. A persistently-bad file -> timeout
+                # -> idle_no_envelope, never a bad accept.
+                pass
+
+            # 2) screen read — only for awaiting_input / dead.
+            stripped = strip_screen(sess.tmux.capture_pane(target))
+            footer = footer_of(stripped)
+            screen_state, meta = classify(
+                stripped, footer, env_present=os.path.exists(env_path),
+                prev_timer=prev_timer, composer_seen=True)
+            prev_timer = meta.get("timer", prev_timer)
+            state = screen_state
+
+            if on_event and screen_state in ("thinking", "streaming"):
+                if on_event(screen_state, meta) is False:
+                    return self._turn_result("client_gone", screen_state, sess,
+                                             envelope_bytes=None)
+
+            if screen_state == "awaiting_input":
+                return self._turn_result(
+                    "awaiting_input", screen_state, sess, envelope_bytes=None,
+                    alive=True, screen=meta.get("screen"),
+                    kind=meta.get("kind"))
+
+            if screen_state == "dead":
+                # classify 'dead' is only a CANDIDATE; corroborate with
+                # has-session/#{pane_dead} and require it to persist (risk #13).
+                try:
+                    alive = sess.tmux.has_session("t")
+                    pane_dead = sess.tmux.pane_dead(target)
+                except Exception:
+                    alive, pane_dead = False, True
+                if (not alive) or pane_dead:
+                    if dead_since is None:
+                        dead_since = time.monotonic()
+                    elif (time.monotonic() - dead_since) >= self._DEAD_QUIESCENT_S:
+                        return self._turn_result("dead", "dead", sess,
+                                                 envelope_bytes=None,
+                                                 alive=False)
+                else:
+                    dead_since = None
+            else:
+                dead_since = None
+            # the bounded await_envelope slice above already paces this loop.
+
+        # Budget elapsed with no fresh file -> idle_no_envelope (never stale).
+        return self._turn_result("idle_no_envelope", state, sess,
+                                 envelope_bytes=None)
 
     def get_or_reconstruct(self, sid):
         """Placeholder + Event pattern (design (1), kills the dual-lock race)."""

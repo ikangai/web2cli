@@ -71,6 +71,30 @@ def test_rejects_group_world_bits(tmp_path):
         paths.read_envelope_bytes(p, UUID)
 
 
+def test_accepts_owner_rw_group_other_read(tmp_path):
+    # Real claude's Write tool honours the umask and lands the envelope at 0o644
+    # (rw-r--r--). The session dir is 0700, so the read bits are moot; group/
+    # other READ (no write) MUST be accepted or the feature never works live.
+    base, sess = _sess(tmp_path)
+    p, raw = _write_env(sess, UUID,
+                        {"tool": "x", "envelope": {"a": 1}, "turn_uuid": UUID,
+                         "gen": UUID},
+                        mode=0o644)
+    assert paths.read_envelope_bytes(p, UUID) == raw
+
+
+def test_rejects_group_writable(tmp_path):
+    # The one mode-based vector we still reject as defence-in-depth: a
+    # group/other-WRITABLE envelope (the injection/tamper vector).
+    base, sess = _sess(tmp_path)
+    p, _ = _write_env(sess, UUID,
+                      {"tool": "x", "envelope": {"a": 1}, "turn_uuid": UUID,
+                       "gen": UUID},
+                      mode=0o620)
+    with pytest.raises(paths.EnvelopeRejected):
+        paths.read_envelope_bytes(p, UUID)
+
+
 def test_rejects_hardlink_nlink_gt_1(tmp_path):
     base, sess = _sess(tmp_path)
     p, _ = _write_env(sess, UUID,

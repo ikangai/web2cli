@@ -92,8 +92,12 @@ while IFS= read -r line; do
             else
                 sleep "$DELAY"
             fi
-            printf '{"tool":"echo","envelope":{"ok":true},"turn_uuid":"%s"}' \
-                "$turn_uuid" > "${env_path}.part"
+            # Faithful mimic: real claude is told to echo BOTH turn_uuid and
+            # the rwa:gen uuid (== turn_uuid here) so the bridge's read-back can
+            # reject a stale/mis-targeted write. The gen field is required by
+            # paths.read_envelope_bytes -> verify_envelope_sentinel.
+            printf '{"tool":"echo","envelope":{"ok":true},"turn_uuid":"%s","gen":"%s"}' \
+                "$turn_uuid" "$turn_uuid" > "${env_path}.part"
             mv -f "${env_path}.part" "$env_path"
             printf '%s\n' '⏺ Write('"$env_path"')'
             printf '%s\n' '⏺ DONE'
