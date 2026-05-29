@@ -64,6 +64,65 @@ def _ensure_session_dir(base, sid, nonce):
     return d
 
 
+_ENV_RE = re.compile(r"\Aenv\.[0-9a-f-]{36}\.json\Z")
+_DOC_RE = re.compile(r"\Adoc\.[0-9a-f-]{36}\.html(\.part)?\Z")
+
+
+def _sweep_stale(session_dir_path, base, keep_doc_uuid=None):
+    """Unlink ALL leftover env.*.json and old doc.*.html (verified-regular,
+    O_NOFOLLOW). Symlinks are removed via os.unlink without following.
+    Never select by recency. The current turn's doc (keep_doc_uuid) survives.
+    """
+    paths.assert_confined(session_dir_path, base)
+    try:
+        names = os.listdir(session_dir_path)
+    except FileNotFoundError:
+        return
+    for name in names:
+        is_env = _ENV_RE.match(name)
+        is_doc = _DOC_RE.match(name)
+        if not (is_env or is_doc):
+            continue
+        if is_doc and keep_doc_uuid and name == f"doc.{keep_doc_uuid}.html":
+            continue
+        # RECONCILED: `name` is a bare filename (the _ENV_RE/_DOC_RE anchors
+        # forbid any '/' or '..'), so its literal containment in the
+        # already-confined session dir is guaranteed. We must NOT realpath-
+        # resolve `full` per-entry: assert_confined would follow a hostile
+        # symlink to its target outside `base` and refuse the unlink — but the
+        # whole point of the sweep is to remove that symlink *entry* (never its
+        # target). os.unlink does not follow the final symlink, so removing the
+        # dangling/escaping link is safe and its target is untouched.
+        full = os.path.join(session_dir_path, name)
+        try:
+            os.unlink(full)               # does not follow the final symlink
+        except FileNotFoundError:
+            pass
+
+
+def stage_turn(tmux, base, session_dir_path, turn_uuid, persisted_bytes) -> str:
+    """Held-lock turn staging: sweep leftovers, inject sentinel, atomically
+    put doc.<turn_uuid>.html, unlink prior env.<turn_uuid>.json, mark busy.
+
+    Called by turn-protocol-fsm's _run_turn_locked, which does send-keys AFTER
+    this returns (rename happens-before the prompt). Returns the staged doc
+    path. tmux is a TmuxClient (or stub) exposing set_option(name, value).
+    """
+    paths.validate_turn_uuid(turn_uuid)
+    _sweep_stale(session_dir_path, base, keep_doc_uuid=None)
+    staged = paths.inject_gen_sentinel(persisted_bytes, turn_uuid)
+    doc = paths.put_doc(session_dir_path, base, turn_uuid, staged)
+    # belt-and-suspenders: ensure no same-uuid env predates this turn
+    env = paths.env_path(session_dir_path, turn_uuid)
+    paths.assert_confined(env, base)
+    try:
+        os.unlink(env)
+    except FileNotFoundError:
+        pass
+    tmux.set_option("@wcb_turn", turn_uuid)
+    return doc
+
+
 class _Session:
     def __init__(self, *, sid, cap, nonce, socket, pane, cwd,
                  rendezvous_dir, log_path, created_at, tmux):
