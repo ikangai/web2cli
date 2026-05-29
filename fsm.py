@@ -63,6 +63,47 @@ STATES = (
 # Composer readiness marker: the framed prompt line begins with '❯ '.
 _COMPOSER_PROMPT = "❯"
 
+# A bare shell prompt: optional path/host preamble then a terminal sigil
+# ('%' zsh, '$' sh/bash, '#' root) possibly followed by trailing whitespace.
+# This is what claude leaves behind after it exits ('martintreiber@10 … %').
+_SHELL_PROMPT_RE = re.compile(r"[%$#]\s*$")
+
+# How many trailing non-blank lines count as "the bottom of the screen" — the
+# active composer frame (rules + '❯' prompt + footer token + advisories) spans
+# a handful of lines, so a small window captures the live frame without ever
+# reaching scrollback.
+_COMPOSER_TAIL_LINES = 6
+
+
+def _composer_present(screen: str) -> bool:
+    """True iff an ACTIVE composer frame sits at the BOTTOM of the screen.
+
+    The discriminator keys on the CURRENT bottom of the pane, never on
+    scrollback. After claude exits, the old composer footer/'❯' lines are
+    still visible ABOVE the returned shell prompt (see post_exit_shell.txt);
+    those stale remnants must NOT count as a live composer.
+
+    Rule:
+      * Look only at the last few non-blank lines (_COMPOSER_TAIL_LINES).
+      * If the LAST non-blank line is a bare shell prompt (ends with %/$/#),
+        the pane has dropped back to the shell -> no composer.
+      * Otherwise, a composer is present iff that bottom window contains the
+        IDLE footer token or a '❯' prompt line.
+
+    composer_ready.txt: the last non-blank line is a tmux advisory (not a
+    shell prompt) and the window holds the IDLE footer token -> True.
+    post_exit_shell.txt: the last non-blank line IS a shell prompt -> False,
+    even though the footer/'❯' survive in scrollback above it.
+    """
+    nonblank = [ln for ln in screen.split("\n") if ln.strip()]
+    if not nonblank:
+        return False
+    # Dropped back to a shell prompt at the very bottom -> composer is gone.
+    if _SHELL_PROMPT_RE.search(nonblank[-1].rstrip()):
+        return False
+    tail = "\n".join(nonblank[-_COMPOSER_TAIL_LINES:])
+    return FOOTER_IDLE in tail or _COMPOSER_PROMPT in tail
+
 
 def _spinner_timer(footer_or_screen: str):
     """Highest elapsed-timer value present, or None. Verb is ignored."""
@@ -85,6 +126,13 @@ def classify(screen: str, footer: str, env_present: bool,
     """
     timer = _spinner_timer(screen)
     meta = {"timer": timer}
+
+    # Shell-name discriminator: no ACTIVE composer frame at the bottom of the
+    # screen (stale composer remnants in scrollback do not count — see post-exit).
+    if not _composer_present(screen):
+        # Trust/menu blocks have no composer frame either — let them through.
+        if not (TRUST_PROMPT in screen or TRUST_OPTION_YES in screen):
+            return ("dead" if composer_seen else "starting"), meta
 
     # awaiting_input: a recognized menu/trust block takes precedence over the
     # WORKING signals (the caller must be able to answer it). Detect only the
