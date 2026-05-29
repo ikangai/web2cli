@@ -53,3 +53,50 @@ def footer_of(screen: str) -> str:
         tail = lines
     footer = "\n".join(tail).strip()
     return footer
+
+
+STATES = (
+    "starting", "thinking", "streaming", "awaiting_input",
+    "idle", "idle_no_envelope", "dead",
+)
+
+# Composer readiness marker: the framed prompt line begins with '❯ '.
+_COMPOSER_PROMPT = "❯"
+
+
+def _spinner_timer(footer_or_screen: str):
+    """Highest elapsed-timer value present, or None. Verb is ignored."""
+    vals = [int(m) for m in SPINNER_TIMER_RE.findall(footer_or_screen)]
+    return max(vals) if vals else None
+
+
+def classify(screen: str, footer: str, env_present: bool,
+             *, prev_timer: "int | None" = None,
+             composer_seen: bool = False) -> "tuple[str, dict]":
+    """Return (state, meta). PINNED SIGNATURE — callers pass composer_seen=.
+
+    WORKING (thinking/streaming) is OR'd and positive:
+        env absent OR rising SPINNER_TIMER_RE OR FOOTER_WORKING present.
+    idle ONLY when no WORKING signal AND env_present; else idle_no_envelope.
+    The spinner verb is NEVER a gate (randomized).
+    """
+    timer = _spinner_timer(screen)
+    meta = {"timer": timer}
+
+    working = False
+    if not env_present:
+        working = True
+    if FOOTER_WORKING in footer:
+        working = True
+    if timer is not None and prev_timer is not None and timer > prev_timer:
+        working = True
+
+    if working:
+        # streaming once assistant content is on screen, else thinking.
+        state = "streaming" if MARKER_ASSISTANT in screen else "thinking"
+        return state, meta
+
+    # Not working. Distinguish idle (env present) from idle_no_envelope.
+    if env_present:
+        return "idle", meta
+    return "idle_no_envelope", meta
