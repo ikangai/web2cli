@@ -10,6 +10,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from session_endpoints import SessionMixin
+
 _POSIX = os.name == "posix"
 
 __version__ = "0.3.1"
@@ -80,7 +82,7 @@ def _kill_tree(proc):
         pass
 
 
-class Handler(BaseHTTPRequestHandler):
+class Handler(SessionMixin, BaseHTTPRequestHandler):
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -89,9 +91,21 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def do_OPTIONS(self):
+        # /session/* preflight gets origin-allowlisted CORS (never `*`); the
+        # legacy /run + /stream preflight keeps its permissive `*` behavior.
         self.send_response(204)
-        self._cors()
+        if self.path.startswith("/session/"):
+            self._session_cors()
+        else:
+            self._cors()
         self.end_headers()
+
+    def do_GET(self):
+        # The only GET surface is the read-only /session/list (the dispatcher
+        # enforces that); everything else is a 405.
+        if self.path.startswith("/session/"):
+            return self._dispatch_session("GET")
+        return self._send(405, {"error": "not found"})
 
     def _authorized(self):
         token = _token()
@@ -153,6 +167,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
+            if self.path.startswith("/session/"):
+                return self._dispatch_session("POST")
             if self.path not in ("/run", "/stream"):
                 return self._send(405, {"error": "not found"})
             if not self._authorized():
