@@ -196,6 +196,13 @@ class BridgeApp(rumps.App):
 
     def quit(self, _):
         self.stop(None)
+        # Tear down any detached wcb_* claude sessions so a quit never leaves
+        # orphaned tmux servers behind (design §4 tray-quit hygiene).
+        try:
+            import session_registry
+            session_registry.kill_all_wcb()
+        except Exception:
+            pass
         rumps.quit_application()
 
 

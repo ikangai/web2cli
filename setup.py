@@ -23,7 +23,8 @@ OPTIONS = {
         "NSHumanReadableCopyright": "",
     },
     "packages": ["rumps"],
-    "includes": ["server", "bridge_common"],
+    "includes": ["server", "bridge_common", "paths", "fsm", "tmux_session",
+                 "session_registry", "session_endpoints"],
 }
 
 setup(

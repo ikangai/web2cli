@@ -231,6 +231,13 @@ class BridgeApp:
 
     def quit(self, _icon=None, _item=None):
         self.stop()
+        # Tear down any detached wcb_* claude sessions so a quit never leaves
+        # orphaned tmux servers behind (design §4 tray-quit hygiene).
+        try:
+            import session_registry
+            session_registry.kill_all_wcb()
+        except Exception:
+            pass
         self.icon.stop()
 
     def run(self):
