@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import threading
 import time
 import uuid
@@ -29,8 +30,17 @@ GRACE_SECONDS = 30.0            # reaper: min age before a session is reapable
 REAP_STRIKES = 2               # reaper: consecutive confirmed-gone passes to evict
 
 
-class _MaxSessionsReached(Exception):
-    pass
+class MaxSessionsReached(Exception):
+    """create() refused a new session — the concurrent cap is reached -> 429.
+
+    Public name: the cleanup-security dispatcher catches
+    `session_registry.MaxSessionsReached`. `_MaxSessionsReached` is kept as a
+    back-compat alias so the existing create()/test callers keep working — both
+    names are the SAME class, so one `except` clause covers every raise site.
+    """
+
+
+_MaxSessionsReached = MaxSessionsReached
 
 
 class _AlternateScreenError(Exception):
@@ -323,6 +333,14 @@ class _Registry:
         with self._lock:
             return list(self._sessions.values())
 
+    def peek(self, sid):
+        """Return the cached _Session for sid (or None) with NO tmux work / no
+        reconstruct. Lets the cap gate validate an already-cached session before
+        any tmux I/O (never leaves a reconstruct placeholder on a cap-mismatch).
+        """
+        with self._lock:
+            return self._sessions.get(sid)
+
     def _alive_ids(self, sessions):
         """tmux liveness probe OUTSIDE the structural lock (design (1))."""
         alive = []
@@ -376,6 +394,19 @@ class _Registry:
             })
         self._list_cache = (time.monotonic(), rows)
         return rows
+
+    def current_offset(self, sess):
+        """Global (rotation-adjusted) byte offset of a session's pipe-pane log.
+
+        bytes-on-disk + bytes-already-rotated-away, so a /session/replay
+        `from_offset` stays monotonic across a log rotation (design §4). Mirrors
+        the `log_bytes` math in list_sessions. Missing/None log => just the base.
+        """
+        try:
+            on_disk = os.path.getsize(sess.log_path) if sess.log_path else 0
+        except OSError:
+            on_disk = 0
+        return on_disk + getattr(sess, "log_offset_base", 0)
 
     def create(self, *, cwd, cols, rows, claude_argv, socket_override=None):
         # 0) confine cwd: must be an existing dir, realpath-resolved.
@@ -437,6 +468,14 @@ class _Registry:
         self._clear_stale_socket(tmux, socket)
 
         pane = tmux.new_session("t", rcwd, cols, rows)   # shell; claude typed in _await_ready
+        # Capture the pane's SHELL pid NOW, before the launch line is typed.
+        # The shell stays the pane process (claude runs as its child), so this
+        # pins the one pid /session/interrupt must never killpg (risk: SIGINT to
+        # the shell's own group tears the session down). 0 if unavailable.
+        try:
+            shell_pid = tmux.pane_pid(pane)
+        except Exception:
+            shell_pid = 0
 
         # Verify the inline-capture invariant ONCE (design (1), calibration):
         # claude renders inline (alternate_on must be 0) or capture-pane -p
@@ -458,6 +497,7 @@ class _Registry:
             cwd=rcwd, rendezvous_dir=rdir, log_path=log_path,
             created_at=time.time(), tmux=tmux,
         )
+        s.shell_pid = shell_pid                  # interrupt killpg guard (Task 43)
         # persist durable options (survive a bridge restart, no Python state).
         # RECONCILED: TmuxClient.set_option is (target, name, value) — pass the
         # session target "t" (the plan's 2-arg form was authoring drift).
@@ -744,6 +784,10 @@ class _Registry:
         ONLY; missing @wcb_* options are recoverable defaults (risk #11)."""
         if not s.tmux.has_session("t"):
             raise _NotFound(s.sid)
+        # Proven live => claude ran at least once this incarnation, so restore
+        # the FSM dead-discriminator latch: a vanished composer on a hydrated
+        # session reads DEAD, not STARTING (design §4; risk #13).
+        s.composer_seen = True
         s.pane = s.tmux.pane_id("t")
         created = s.tmux.get_option("t", "@wcb_created")
         nonce = s.tmux.get_option("t", "@wcb_nonce")
@@ -910,6 +954,34 @@ class _Registry:
         except paths.PathSafetyError:
             return                                        # refuse unconfined rm
         shutil.rmtree(rdir, ignore_errors=True)
+
+
+def kill_all_wcb(tmux_bin="tmux"):
+    """Tear down EVERY `wcb_*` tmux server (tray-quit hygiene, design §4).
+
+    Module-level (no registry instance needed) so a tray quit handler can call
+    it without state. Enumerates the `-L` socket dir tmux itself uses
+    ($TMUX_TMPDIR or /tmp, then tmux-<uid>/) and kill-servers each wcb_* socket.
+    Best-effort: never raises (a quit handler must not be blocked by a hung
+    socket). Only touches the `wcb_` prefix, so unrelated tmux servers survive.
+    """
+    sock_dir = os.path.join(os.environ.get("TMUX_TMPDIR") or "/tmp",
+                            "tmux-%d" % os.getuid())
+    try:
+        names = os.listdir(sock_dir)
+    except OSError:
+        return
+    for name in names:
+        if not name.startswith("wcb_"):
+            continue
+        try:
+            subprocess.run(
+                [tmux_bin, "-L", name, "kill-server"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+        except Exception:
+            pass
 
 
 REGISTRY = _Registry()
