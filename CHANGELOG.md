@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-06-09
+
+Adds a persistent interactive `claude` session backend: the `/session/*` route family hosts a long-lived claude TUI inside an invisible tmux session and exchanges documents and edit envelopes through a byte-exact file rendezvous. Designed as a drop-in replacement for the one-shot `claude -p` flow (same `rwa-edit/1` envelope out), with multi-turn continuity. The legacy `/run` and `/stream` endpoints are unchanged — every v0.3.x client keeps working.
+
+### Added
+- **`/session/create`** — launch a persistent claude session (`claude --permission-mode bypassPermissions`, argv fixed server-side) in a private tmux server (`wcb_<id>` socket). Returns `session_id` plus a per-session capability secret (`cap`) that every subsequent call must present. The workspace-trust prompt is detected and answered automatically during startup. Max 8 concurrent sessions (`429` over the cap).
+- **`/session/stream`** — run one edit turn as SSE. The bridge stages the caller's document to a per-turn file (with an injected `<!-- rwa:gen <turn_uuid> -->` sentinel), prompts claude to write the edit envelope via a `.part`→rename file handshake, and streams TUI state (`thinking` / `streaming` / `awaiting_input`) while polling for the completion edge. Turn completion is the **file rename**, never screen quiescence. Concurrent turns get an observable `409`, never interleaving.
+- **`/session/get-envelope`** — returns claude's envelope bytes **verbatim** (no re-serialization), gen-sentinel- and `turn_uuid`-checked so a stale or mis-targeted write is rejected (`422`).
+- **`/session/capture`**, **`/session/send-key`**, **`/session/interrupt`**, **`/session/replay`**, **`/session/delete`**, **`/session/list`** — screen snapshot + state, keyboard input (for answering interactive prompts surfaced as `awaiting_input`), guarded Ctrl-C, byte-offset log replay, teardown, and listing.
+- **Session reconstruction** — a restarted bridge re-adopts live `wcb_*` tmux sessions from their on-disk session dirs.
+- **Security baseline for `/session/*`:** bearer token is **mandatory** (unset token ⇒ all `/session/*` rejected), Origin allowlist via `WCB_ALLOWED_ORIGINS` / `WCB_RWA_ORIGIN` with origin-reflecting CORS (never `*`), per-session `cap` on every control route, 0700 rendezvous dirs with symlink-refusing (`O_NOFOLLOW`) reads, optional cwd confinement via `WCB_ALLOWED_CWD_ROOT`, caller-supplied tmux sockets never accepted.
+- **Tray apps kill orphaned `wcb_*` tmux servers on quit** (macOS and Windows).
+- New modules: `tmux_session.py`, `session_registry.py`, `session_endpoints.py`, `fsm.py` (pure screen-state classifier), `paths.py`. Test suite: 285 tests (unit / integration with a scripted fake claude / opt-in live tier), including a `claude -p` vs `/session/*` drop-in comparison harness.
+
+### Notes
+- `/session/*` requires `tmux` on the host (`503` when missing) — effectively macOS/Linux only; Windows builds still serve `/run` and `/stream`.
+- Design doc: [`docs/plans/2026-05-29-persistent-claude-session-design.md`](docs/plans/2026-05-29-persistent-claude-session-design.md).
+
 ## [0.3.1] — 2026-05-17
 
 Bug-fix release. No changes to the wire protocol — every v0.3.0 client keeps working.

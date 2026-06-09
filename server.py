@@ -14,7 +14,7 @@ from session_endpoints import SessionMixin
 
 _POSIX = os.name == "posix"
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 
 MAX_BODY_BYTES = 16 * 1024 * 1024  # 16 MiB — enough for reasonable stdin payloads

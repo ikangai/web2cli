@@ -2,9 +2,10 @@
 
 A tiny localhost HTTP server that executes shell commands on behalf of local
 HTML apps and returns the result as JSON or streams it as Server-Sent Events.
-Ships with optional macOS menu bar and Windows tray app wrappers.
+Also hosts persistent interactive `claude` sessions in invisible tmux servers
+(`/session/*`). Ships with optional macOS menu bar and Windows tray app wrappers.
 
-Current release: **v0.3.0** — see [`CHANGELOG.md`](CHANGELOG.md) for what changed.
+Current release: **v0.4.0** — see [`CHANGELOG.md`](CHANGELOG.md) for what changed.
 
 ## Install
 
@@ -43,6 +44,7 @@ Removes the bundle / executable and Start Menu shortcut. Config files at `~/Libr
 ## Components
 
 - `server.py` — the bridge. Pure Python stdlib, no dependencies.
+- `session_endpoints.py`, `session_registry.py`, `tmux_session.py`, `fsm.py`, `paths.py` — the `/session/*` persistent-claude-session backend (stdlib only; needs the `tmux` binary at runtime).
 - `bridge_app.py` — macOS menu bar app (uses [`rumps`](https://pypi.org/project/rumps/)).
 - `bridge_app_win.py` — Windows tray app (uses [`pystray`](https://pypi.org/project/pystray/) + [`Pillow`](https://pypi.org/project/Pillow/) + `tkinter`).
 - `setup.py` — `py2app` config to build a standalone macOS `.app` bundle.
@@ -120,6 +122,26 @@ data: {"exit_code": 0, "timed_out": false}
 
 CORS preflight. Returns 204 with `Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods: POST, OPTIONS`, and `Access-Control-Allow-Headers: Content-Type, Authorization`.
 
+### `/session/*` — persistent claude sessions
+
+Hosts a long-lived interactive `claude` TUI inside an invisible per-session tmux server and runs *edit turns* against it. The result of each turn travels through a **file rendezvous**, not the terminal screen: the bridge stages the document to a per-turn file, claude is prompted to write an `rwa-edit/1` edit-envelope JSON to a bridge-chosen path (scratch `.part` file, then an atomic rename as the completion signal), and the bridge returns those bytes verbatim. The tmux screen is only used for liveness and for surfacing interactive prompts. Requires `tmux` on the host (`503` otherwise).
+
+Unlike `/run` and `/stream`, **every `/session/*` route requires the bearer token** (an unset `WEB_CLI_BRIDGE_TOKEN` rejects all session calls) and an allowlisted `Origin` (`WCB_ALLOWED_ORIGINS`, comma-separated; CORS reflects the allowlisted origin, never `*`). `create` returns a per-session capability secret `cap` that every other route must echo.
+
+| Route | Body | Returns |
+|---|---|---|
+| `POST /session/create` | `{"cwd": "...", "cols"?, "rows"?}` | `{"session_id", "cap", "rendezvous_dir", "created_at"}` — launches `claude --permission-mode bypassPermissions` (argv is fixed server-side), auto-answers the workspace-trust prompt, `429` past 8 concurrent sessions |
+| `POST /session/stream` | `{"session_id", "cap", "doc", "instruction", "timeout"?}` | SSE: `state` events (`thinking` / `streaming` / `awaiting_input`), `keepalive`, then one `done` with `reason` and the `turn_uuid`; `409` if a turn is already running |
+| `POST /session/get-envelope` | `{"session_id", "cap", "turn_uuid"}` | claude's envelope bytes **verbatim**; `404` if not (yet) written, `422` if it fails the gen-sentinel / turn-uuid check |
+| `POST /session/capture` | `{"session_id", "cap"}` | `{"screen", "state", "log_offset"}` — current screen snapshot |
+| `POST /session/send-key` | `{"session_id", "cap", "keys": ["Down", "1", "Enter"]}` | sends keys (named keys or literal text) — e.g. to answer a menu surfaced as `awaiting_input` |
+| `POST /session/interrupt` | `{"session_id", "cap"}` | guarded Ctrl-C of the running turn |
+| `POST /session/replay` | `{"session_id", "cap", "from_offset"}` | base64 slice of the session log from a byte offset |
+| `POST /session/delete` | `{"session_id", "cap"}` | tears the session down |
+| `GET /session/list` | — | `{"sessions": [...]}` |
+
+A typical edit turn: `create` once → per turn: `stream` (send doc + instruction, watch states) → on `done` with `reason: "idle"`, fetch the envelope with `get-envelope` → apply it client-side → next `stream`. Envelopes are per-turn and swept when the next turn starts, so fetch between turns. If a turn ends `awaiting_input`, inspect with `capture` and answer with `send-key`.
+
 ### Authentication (optional)
 
 Set `WEB_CLI_BRIDGE_TOKEN` in the environment before starting the server. When set, every `POST /run` and `POST /stream` must carry:
@@ -136,7 +158,7 @@ The menu bar app exposes **Token ▸ Generate / Copy / Clear** to manage the tok
 
 - `400` — JSON parse failure, missing `command`, bad `cwd`, or malformed `timeout` / `stdin` / `command` / `cwd` field type.
 - `401` — token required but missing or wrong.
-- `405` — `POST` to a path other than `/run` or `/stream`.
+- `405` — `POST` to a path other than `/run`, `/stream`, or `/session/*`.
 - `500` — unexpected server error.
 - `501` — methods without a handler (`GET`, `PUT`, `DELETE`, …).
 
@@ -188,9 +210,11 @@ while (true) {
 
 ## Configuration
 
-The server reads two environment variables at request time:
+The server reads these environment variables at request time:
 
-- `WEB_CLI_BRIDGE_TOKEN` — enables bearer auth when set.
+- `WEB_CLI_BRIDGE_TOKEN` — enables bearer auth on `/run` + `/stream` when set; **required** for any `/session/*` call.
+- `WCB_ALLOWED_ORIGINS` (alias `WCB_RWA_ORIGIN`) — comma-separated Origin allowlist for `/session/*`; browser callers from other origins get `403`.
+- `WCB_ALLOWED_CWD_ROOT` — when set, `/session/create` only accepts a `cwd` inside this root (default: any directory).
 
 The menu bar app additionally reads two values from `~/Library/Application Support/WebCLIBridge/config.json` (created on first change):
 
@@ -240,3 +264,4 @@ See [`docs/plans/2026-05-16-web-cli-bridge-v2-design.md`](docs/plans/2026-05-16-
 1. **Stdin is batch-only.** Commands that prompt interactively must have their full input supplied in the request body up front.
 2. **No allowlist / sandboxing.** Any caller (with the token if set) can run any shell command the launching user can.
 3. **Shell-level buffering.** Programs that line-buffer only when attached to a TTY may still appear chunky on `/stream`; wrap them with `stdbuf -oL …` or `unbuffer` when that matters.
+4. **`/session/*` needs tmux.** The persistent-session routes return `503` where the `tmux` binary is unavailable — in practice they are macOS/Linux only. The claude argv is fixed server-side; sessions always run `claude`, not arbitrary CLIs.
