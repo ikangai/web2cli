@@ -208,6 +208,15 @@ while (true) {
 }
 ```
 
+## Examples
+
+Two self-contained demo pages in [`examples/`](examples/) (open directly from disk, no build step):
+
+- [`claude-p-test.html`](examples/claude-p-test.html) — one-shot prompting over `POST /run`: the prompt travels base64-through-stdin into `claude -p`, so no shell quoting can break it. Fresh claude process per prompt, no conversation memory.
+- [`claude-session-chat.html`](examples/claude-session-chat.html) — multi-turn chat over `/session/*`: one persistent claude instance answers every prompt (full conversation continuity), each turn running through `stream` → `get-envelope` so the answer arrives byte-exact via the file rendezvous. Includes a collapsible live view of the underlying TUI screen.
+
+The session page needs the server started with a token and an allowlisted origin for `file://` pages, e.g. `WEB_CLI_BRIDGE_TOKEN=… WCB_ALLOWED_ORIGINS=null python3 server.py 8766`.
+
 ## Configuration
 
 The server reads these environment variables at request time:

@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>claude -p bridge test</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    max-width: 760px; margin: 2rem auto; padding: 0 1rem;
+  }
+  h1 { font-size: 1.2rem; }
+  .row { display: flex; gap: .75rem; flex-wrap: wrap; margin: .75rem 0; align-items: end; }
+  label { display: block; font-size: .8rem; opacity: .7; margin-bottom: .15rem; }
+  input[type=text], input[type=password], input[type=number] {
+    padding: .4rem .5rem; border: 1px solid #8884; border-radius: 6px;
+    background: transparent; color: inherit;
+  }
+  textarea {
+    width: 100%; min-height: 90px; padding: .6rem; box-sizing: border-box;
+    border: 1px solid #8884; border-radius: 8px; font: inherit;
+    background: transparent; color: inherit; resize: vertical;
+  }
+  button {
+    padding: .5rem 1.2rem; border: none; border-radius: 8px;
+    background: #4a6cf7; color: #fff; font: inherit; cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: wait; }
+  pre {
+    white-space: pre-wrap; word-break: break-word; padding: .8rem;
+    border: 1px solid #8884; border-radius: 8px; min-height: 3rem;
+  }
+  .err { color: #c0392b; }
+  .meta { font-size: .8rem; opacity: .7; }
+</style>
+</head>
+<body>
+<h1>claude -p over web2cli</h1>
+
+<div class="row">
+  <div><label>Bridge port</label><input id="port" type="number" value="8765" style="width:6rem"></div>
+  <div><label>Token (if set in the tray app)</label><input id="token" type="password" style="width:16rem" placeholder="optional"></div>
+  <div><label>Timeout (s)</label><input id="timeout" type="number" value="120" style="width:5rem"></div>
+  <div><label style="margin-bottom:.45rem">
+    <input id="bypass" type="checkbox"> bypass permissions</label></div>
+</div>
+
+<textarea id="prompt" placeholder="Ask claude something… (Cmd+Enter to run)">What is the capital of Austria? Answer in one sentence.</textarea>
+
+<div class="row">
+  <button id="run">Run</button>
+  <span id="status" class="meta"></span>
+</div>
+
+<label>stdout</label>
+<pre id="stdout"></pre>
+<label>stderr</label>
+<pre id="stderr" class="err"></pre>
+<p id="exit" class="meta"></p>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// remember settings between visits
+for (const id of ["port", "token", "bypass"]) {
+  const saved = localStorage.getItem("wcb_" + id);
+  if (saved !== null) {
+    if ($(id).type === "checkbox") $(id).checked = saved === "1";
+    else $(id).value = saved;
+  }
+  $(id).addEventListener("change", () => localStorage.setItem(
+    "wcb_" + id, $(id).type === "checkbox" ? ($(id).checked ? "1" : "0") : $(id).value));
+}
+
+function b64utf8(s) {
+  return btoa(Array.from(new TextEncoder().encode(s), b => String.fromCharCode(b)).join(""));
+}
+
+async function run() {
+  const prompt = $("prompt").value.trim();
+  if (!prompt) return;
+
+  // prompt goes through base64 + stdin so no quoting/escaping can break the shell line
+  const argv = "claude -p --output-format text"
+    + ($("bypass").checked ? " --permission-mode bypassPermissions" : "");
+  const command = `echo '${b64utf8(prompt)}' | base64 -d | ${argv}`;
+
+  const headers = { "Content-Type": "application/json" };
+  if ($("token").value) headers["Authorization"] = "Bearer " + $("token").value;
+
+  $("run").disabled = true;
+  $("stdout").textContent = ""; $("stderr").textContent = ""; $("exit").textContent = "";
+  const t0 = Date.now();
+  const tick = setInterval(() =>
+    $("status").textContent = `running… ${((Date.now() - t0) / 1000).toFixed(0)}s`, 250);
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${$("port").value}/run`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ command, timeout: Number($("timeout").value) || 120 }),
+    });
+    if (!res.ok) throw new Error(`bridge returned HTTP ${res.status}: ${await res.text()}`);
+    const { stdout, stderr, exit_code, timed_out } = await res.json();
+    $("stdout").textContent = stdout || "(empty)";
+    $("stderr").textContent = stderr || "";
+    $("exit").textContent = timed_out
+      ? "⏱ timed out"
+      : `exit ${exit_code} · ${((Date.now() - t0) / 1000).toFixed(1)}s`;
+  } catch (e) {
+    $("stderr").textContent = e.message
+      + "\n\nIs the bridge running? Check the menu bar app / port, and the token if one is set.";
+  } finally {
+    clearInterval(tick);
+    $("status").textContent = "";
+    $("run").disabled = false;
+  }
+}
+
+$("run").addEventListener("click", run);
+$("prompt").addEventListener("keydown", e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") run();
+});
+</script>
+</body>
+</html>
