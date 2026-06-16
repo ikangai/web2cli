@@ -207,6 +207,10 @@ class BridgeApp(rumps.App):
 
 
 if __name__ == "__main__":
+    # Repair PATH before the server can spawn anything: a .app launched from
+    # the GUI inherits only /usr/bin:/bin:/usr/sbin:/sbin, so `claude`/`tmux`
+    # would otherwise be "command not found" (exit 127).
+    bridge_common.ensure_user_path()
     app = BridgeApp()
     app.start(None)
     app.run()

@@ -10,11 +10,12 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import bridge_common
 from session_endpoints import SessionMixin
 
 _POSIX = os.name == "posix"
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 
 MAX_BODY_BYTES = 16 * 1024 * 1024  # 16 MiB — enough for reasonable stdin payloads
@@ -400,5 +401,8 @@ class Handler(SessionMixin, BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    # Spawned commands inherit our PATH; make sure user-installed CLIs resolve
+    # even when this is launched from a context with a stripped-down PATH.
+    bridge_common.ensure_user_path()
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()

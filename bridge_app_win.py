@@ -248,4 +248,7 @@ class BridgeApp:
 
 
 if __name__ == "__main__":
+    # No-op on Windows (GUI apps inherit the full registry PATH), but keeps the
+    # three entrypoints uniform.
+    bridge_common.ensure_user_path()
     BridgeApp().run()

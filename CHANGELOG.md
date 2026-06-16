@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-06-16
+
+Bug-fix release. No changes to the wire protocol — every v0.4.0 client keeps working.
+
+### Fixed
+- **`claude` / `tmux` not found (exit `127`) when the bridge runs as a GUI-launched `.app`.** A `WebCLIBridge.app` started from Finder / Dock / a login item inherits only `PATH=/usr/bin:/bin:/usr/sbin:/sbin` — it never sources the user's shell rc — so commands like `claude -p …` (installed in `~/.local/bin`) and the `/session/*` tmux backend (`tmux` in `/opt/homebrew/bin`) failed with `command not found`. The bridge now repairs `PATH` once at startup via `bridge_common.ensure_user_path()`, which harvests the login shell's real `PATH` (`$SHELL -ilc`, marker-fenced, with a static fallback list of common bin dirs) and prepends any missing directories before the server can spawn anything. Both `/run` (`shell=True`) and `/session/*` (tmux) inherit the repaired environment. Running the bridge from a terminal was never affected. Called from the `__main__` of all three entrypoints (`bridge_app.py`, `bridge_app_win.py`, `server.py`); a no-op on Windows.
+
+### Added
+- **`build-dmg.sh`** — builds a drag-to-install `dist/WebCLIBridge-<version>.dmg` from the py2app bundle using the system `hdiutil` (no extra tooling). The disk image holds `WebCLIBridge.app` next to an `Applications` shortcut.
+
+### Changed
+- `server.py`: `__version__` bumped to `0.4.1` (the macOS `.app` and both tray apps' About boxes read this).
+
 ## [0.4.0] — 2026-06-09
 
 Adds a persistent interactive `claude` session backend: the `/session/*` route family hosts a long-lived claude TUI inside an invisible tmux session and exchanges documents and edit envelopes through a byte-exact file rendezvous. Designed as a drop-in replacement for the one-shot `claude -p` flow (same `rwa-edit/1` envelope out), with multi-turn continuity. The legacy `/run` and `/stream` endpoints are unchanged — every v0.3.x client keeps working.
@@ -94,6 +107,8 @@ Initial release.
 - macOS menu bar app (`bridge_app.py`) with Start / Stop / Quit.
 - `py2app` configuration to bundle a standalone `.app`.
 
+[0.4.1]: https://github.com/ikangai/web2cli/releases/tag/v0.4.1
+[0.4.0]: https://github.com/ikangai/web2cli/releases/tag/v0.4.0
 [0.3.1]: https://github.com/ikangai/web2cli/releases/tag/v0.3.1
 [0.3.0]: https://github.com/ikangai/web2cli/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ikangai/web2cli/releases/tag/v0.2.0

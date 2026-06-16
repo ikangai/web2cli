@@ -5,7 +5,7 @@ HTML apps and returns the result as JSON or streams it as Server-Sent Events.
 Also hosts persistent interactive `claude` sessions in invisible tmux servers
 (`/session/*`). Ships with optional macOS menu bar and Windows tray app wrappers.
 
-Current release: **v0.4.0** — see [`CHANGELOG.md`](CHANGELOG.md) for what changed.
+Current release: **v0.4.1** — see [`CHANGELOG.md`](CHANGELOG.md) for what changed.
 
 ## Install
 
@@ -249,6 +249,22 @@ python3 -m pip install py2app rumps
 python3 setup.py py2app
 # → dist/WebCLIBridge.app
 ```
+
+## Build a macOS `.dmg` installer
+
+A drag-to-install disk image built from the `.app` above with the system
+`hdiutil` (no extra tooling):
+
+```bash
+./build-dmg.sh
+# → dist/WebCLIBridge-<version>.dmg
+```
+
+Double-click the `.dmg`, then drag **WebCLIBridge.app** onto the **Applications**
+shortcut in the window. Launch it from Spotlight/Applications — look for ⚡ in
+the menu bar. The app is ad-hoc signed, so a *downloaded* copy needs a one-time
+right-click → **Open** to clear Gatekeeper (a locally built `.dmg` is not
+quarantined).
 
 ## Build a Windows `.exe`
 
